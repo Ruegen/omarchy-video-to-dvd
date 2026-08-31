@@ -2,6 +2,8 @@
 
 Omarchy bar widget: select video → PAL/NTSC DVD-Video ISO → burn → eject. Uses AMD AMF hardware encoding (`mpeg2_amf`) automatically when available.
 
+![Preview](preview.png)
+
 ## Usage
 
 1. Click 💿 on bar.
