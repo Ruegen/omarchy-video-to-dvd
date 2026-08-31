@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.ruegen.video-to-dvd",
+  "name": "Video to DVD",
+  "version": "1.3.0",
+  "author": "Ruegen",
+  "license": "MIT",
+  "description": "Convert a video to a PAL DVD-Video ISO and burn it. Panel setup installs Arch packages and DVD drive permission.",
+  "kinds": ["bar-widget"],
+  "entryPoints": { "barWidget": "BarWidget.qml" },
+  "barWidget": {
+    "displayName": "Video to DVD",
+    "category": "Media",
+    "allowMultiple": false,
+    "defaultSection": "left"
+  }
+}
