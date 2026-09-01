@@ -1,6 +1,6 @@
 # Video to DVD
 
-Version 1.5.0
+Version 1.0.0
 
 Omarchy bar widget: pick a video → PAL or NTSC DVD-Video ISO → wait for a blank disc → burn → eject.
 
