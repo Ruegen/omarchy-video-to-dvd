@@ -60,7 +60,9 @@ Panel {
   readonly property bool showPackageSetup: root.setupProbed && !root.packagesReady
   readonly property bool showDriveSetup: root.setupProbed && root.packagesReady && root.driveStatus === "need-permission"
   readonly property bool showMainActions: root.packagesReady && !root.showDriveSetup
-  readonly property bool canMakeDvd: !root.busy && root.showMainActions && root.inputPath.length > 0
+  readonly property bool showDoneUi: root.phase === "done"
+  readonly property bool showWorkUi: root.showMainActions && !root.showDoneUi
+  readonly property bool canMakeDvd: !root.busy && root.showWorkUi && root.inputPath.length > 0
 
   readonly property color contentForeground: bar ? bar.foreground : Color.foreground
   readonly property string contentFontFamily: bar ? bar.fontFamily : Style.font.family
@@ -81,8 +83,11 @@ Panel {
     return path.replace(/\.[^./]+$/, "") + ".iso"
   }
 
-  function notify(title, body) {
-    notifyProc.exec(["bash", root.scriptPath, "notify", title, body || ""])
+  function notify(title, body, sound) {
+    var args = ["bash", root.scriptPath, "notify", title, body || ""]
+    if (sound)
+      args.push(sound)
+    notifyProc.exec(args)
   }
 
   function resetIdle(status) {
@@ -91,6 +96,34 @@ Panel {
     root.jobPgid = 0
     if (status !== undefined)
       root.statusText = status
+  }
+
+  function enterDone() {
+    waitTimer.stop()
+    if (blankProc.running)
+      blankProc.running = false
+    root.busy = false
+    root.converted = true
+    root.progressPct = 100
+    root.jobPgid = 0
+    root.jobHasError = false
+    root.phase = "done"
+    root.statusText = root.t("done.title")
+  }
+
+  function makeAnother() {
+    root.inputPath = ""
+    root.inputName = ""
+    root.outputIso = ""
+    root.converted = false
+    root.progressPct = 0
+    root.userCancelled = false
+    root.waitNotified = false
+    root.jobHasError = false
+    root.jobPgid = 0
+    root.busy = false
+    root.phase = "idle"
+    root.statusText = root.t("status.idle")
   }
 
   function translateDriveLabel(label) {
@@ -245,7 +278,7 @@ Panel {
   }
 
   function applySetupStatus() {
-    if (root.busy) return
+    if (root.busy || root.phase === "done") return
 
     if (root.setupBusy && root.setupKind === "packages" && root.packagesReady)
       root.clearSetupBusy()
@@ -455,6 +488,8 @@ Panel {
     if (root.phase === "burn" || root.userCancelled)
       return
     waitTimer.stop()
+    if (blankProc.running)
+      blankProc.running = false
     root.phase = "burn"
     root.progressPct = 0
     root.statusText = root.t("status.burning")
@@ -468,7 +503,7 @@ Panel {
 
   Timer {
     id: waitTimer
-    interval: 1500
+    interval: 3000
     repeat: true
     onTriggered: {
       if (root.phase !== "wait" || root.userCancelled) {
@@ -535,8 +570,7 @@ Panel {
             shown = shown + " · " + root.progressPct + "%"
           root.statusText = shown
         } else if (line.indexOf("RESULT:BURNED:") === 0) {
-          root.converted = true
-          root.resetIdle(root.t("status.dvdBurned"))
+          root.enterDone()
           root.notify(root.t("notify.burned.title"), root.t("notify.burned.body"))
         } else if (line.indexOf("RESULT:ERROR:") === 0) {
           root.handleJobError(line.substring(13), root.t("notify.burnFailed.title"))
@@ -767,7 +801,7 @@ Panel {
           id: tvStandardRow
           width: parent.width
           spacing: Style.space(8)
-          visible: !root.busy && root.showMainActions
+          visible: !root.busy && root.showWorkUi
 
           Repeater {
             model: [
@@ -803,7 +837,7 @@ Panel {
           id: driveRow
           width: parent.width
           spacing: Style.space(8)
-          visible: root.showMainActions && root.driveCount >= 2
+          visible: root.showWorkUi && root.driveCount >= 2
 
           Repeater {
             model: driveModel
@@ -847,7 +881,7 @@ Panel {
           width: parent.width
           height: Style.space(32)
           radius: Style.cornerRadius
-          visible: root.showMainActions
+          visible: root.showWorkUi
           opacity: root.busy ? 0.4 : 1.0
           color: selectMouse.containsMouse && !root.busy
             ? Style.hoverFillFor(root.contentForeground, Color.accent)
@@ -872,7 +906,7 @@ Panel {
         Text {
           id: fileLabel
           width: parent.width
-          visible: root.showMainActions
+          visible: root.showWorkUi
           text: root.inputPath.length > 0 ? root.t("file.label", root.inputName) : root.t("file.none")
           elide: Text.ElideMiddle
           wrapMode: Text.NoWrap
@@ -896,7 +930,7 @@ Panel {
           height: Style.space(6)
           radius: Style.cornerRadius > 0 ? height / 2 : 0
           color: Qt.rgba(root.contentForeground.r, root.contentForeground.g, root.contentForeground.b, 0.12)
-          visible: root.busy || root.converted
+          visible: root.showWorkUi && (root.busy || root.converted)
           Rectangle {
             width: Math.round(parent.width * (root.progressPct / 100))
             height: parent.height
@@ -908,6 +942,7 @@ Panel {
 
         Text {
           width: parent.width
+          visible: root.showWorkUi
           text: root.statusText + ((root.busy && root.phase !== "wait") ? (" (" + root.progressPct + "%)") : "")
           color: root.contentForeground
           wrapMode: Text.WrapAnywhere
@@ -915,10 +950,56 @@ Panel {
           font.pixelSize: Style.font.body
         }
 
+        Column {
+          width: parent.width
+          spacing: Style.space(12)
+          visible: root.showDoneUi
+
+          Text {
+            width: parent.width
+            text: root.t("done.title")
+            color: root.contentForeground
+            wrapMode: Text.Wrap
+            font.family: root.contentFontFamily
+            font.pixelSize: Style.font.body
+            font.bold: true
+          }
+          Text {
+            width: parent.width
+            text: root.t("done.body")
+            color: Qt.darker(root.contentForeground, 1.25)
+            wrapMode: Text.Wrap
+            font.family: root.contentFontFamily
+            font.pixelSize: Style.font.body
+          }
+          Rectangle {
+            width: parent.width
+            height: Style.space(32)
+            radius: Style.cornerRadius
+            color: againMouse.containsMouse
+              ? Style.hoverFillFor(root.contentForeground, Color.accent)
+              : Qt.rgba(root.contentForeground.r, root.contentForeground.g, root.contentForeground.b, 0.08)
+            Text {
+              anchors.centerIn: parent
+              text: root.t("action.makeAnother")
+              color: root.contentForeground
+              font.family: root.contentFontFamily
+              font.pixelSize: Style.font.body
+            }
+            MouseArea {
+              id: againMouse
+              anchors.fill: parent
+              hoverEnabled: true
+              cursorShape: Qt.PointingHandCursor
+              onClicked: root.makeAnother()
+            }
+          }
+        }
+
         Row {
           width: parent.width
           spacing: Style.space(8)
-          visible: root.showMainActions
+          visible: root.showWorkUi
 
           Rectangle {
             width: (parent.width - Style.space(8)) / 2
@@ -978,6 +1059,7 @@ Panel {
 
         Text {
           width: parent.width
+          visible: root.showWorkUi
           text: root.t("legal")
           color: Qt.darker(root.contentForeground, 1.5)
           wrapMode: Text.Wrap

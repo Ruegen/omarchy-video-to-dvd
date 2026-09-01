@@ -69,6 +69,13 @@ echo "== growisofs CR progress"
 got=$(printf '%s' $'start\r5.2 percent\r10.0 percent\ndone\n' | burn_progress_lines | paste -sd'|' -)
 assert_eq "$got" "PROGRESS:BURN:start|PROGRESS:BURN:5.2 percent|PROGRESS:BURN:10.0 percent|PROGRESS:BURN:done" "CR updates become one line each"
 
+
+echo "== classify_udev_props"
+assert_eq "$(classify_udev_props $'ID_CDROM=1\n')" "BLANK:NONE" "udev: no media"
+assert_eq "$(classify_udev_props $'ID_CDROM_MEDIA=1\nID_CDROM_MEDIA_STATE=blank\n')" "BLANK:YES" "udev: blank DVD"
+assert_eq "$(classify_udev_props $'ID_CDROM_MEDIA=1\nID_CDROM_MEDIA_STATE=blank\n' 5000000000)" "BLANK:TOO_SMALL" "udev: ISO larger than DVD-5"
+assert_eq "$(classify_udev_props $'ID_CDROM_MEDIA=1\nID_FS_TYPE=iso9660\n')" "BLANK:NO" "udev: already has a filesystem"
+
 echo "== iso_need_bytes"
 assert_eq "$(iso_need_bytes)" "5237243904" "DVD-5 + 512MiB slack"
 

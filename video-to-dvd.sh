@@ -75,14 +75,39 @@ ensure_session() {
   exec setsid --wait /bin/bash "$0" "$MODE" "$@"
 }
 
+# Freedesktop event sound (complete.oga). Respects the session sound theme.
+play_event_sound() {
+  local id="${1:-complete}"
+  local file="/usr/share/sounds/freedesktop/stereo/${id}.oga"
+  if command -v canberra-gtk-play >/dev/null 2>&1; then
+    canberra-gtk-play -i "$id" >/dev/null 2>&1 && return 0
+  fi
+  if [[ -f "$file" ]]; then
+    if command -v mpv >/dev/null 2>&1; then
+      mpv --no-video --really-quiet "$file" >/dev/null 2>&1 && return 0
+    fi
+    if command -v paplay >/dev/null 2>&1; then
+      paplay "$file" >/dev/null 2>&1 && return 0
+    fi
+    if command -v pw-play >/dev/null 2>&1; then
+      pw-play "$file" >/dev/null 2>&1 && return 0
+    fi
+  fi
+  return 0
+}
+
 notify_user() {
   local title="${1:-}"
   local body="${2:-}"
+  local sound="${3:-}"
   [[ -n "$title" ]] || return 0
   if command -v omarchy-notification-send >/dev/null 2>&1; then
     omarchy-notification-send --app-name "Video to DVD" -u normal "$title" "$body" || true
   elif command -v notify-send >/dev/null 2>&1; then
     notify-send --app-name "Video to DVD" -u normal "$title" "$body" || true
+  fi
+  if [[ -n "$sound" ]]; then
+    play_event_sound "$sound" || true
   fi
 }
 
@@ -97,14 +122,7 @@ eject_disc() {
     echo "RESULT:ERROR:eject-failed"
     return 1
   fi
-  {
-    echo "=== eject $(date -Iseconds) dev=$dev ==="
-  } >> "$LOG" 2>/dev/null || true
-  if eject "$dev" >>"$LOG" 2>&1; then
-    echo "RESULT:OK:ejected"
-    return 0
-  fi
-  if eject -r "$dev" >>"$LOG" 2>&1; then
+  if try_eject "$dev"; then
     echo "RESULT:OK:ejected"
     return 0
   fi
@@ -357,6 +375,56 @@ classify_blank() {
   fi
 
   echo "BLANK:NO"
+}
+
+# udev properties (no SCSI I/O). USB trays wedge if we SIGKILL dvd+rw-mediainfo.
+classify_udev_props() {
+  local props="$1"
+  local iso_size="${2:-}"
+  local media state fstype
+
+  media=$(printf '%s\n' "$props" | sed -n 's/^ID_CDROM_MEDIA=//p' | tail -n1)
+  if [[ "$media" != "1" ]]; then
+    echo "BLANK:NONE"
+    return 0
+  fi
+  state=$(printf '%s\n' "$props" | sed -n 's/^ID_CDROM_MEDIA_STATE=//p' | tail -n1)
+  fstype=$(printf '%s\n' "$props" | sed -n 's/^ID_FS_TYPE=//p' | tail -n1)
+  if [[ "$state" == "blank" ]]; then
+    if [[ -n "$iso_size" && "$iso_size" =~ ^[0-9]+$ ]] && (( iso_size > DVD_BYTES )); then
+      echo "BLANK:TOO_SMALL"
+      return 0
+    fi
+    echo "BLANK:YES"
+    return 0
+  fi
+  if [[ -n "$fstype" ]]; then
+    echo "BLANK:NO"
+    return 0
+  fi
+  echo "BLANK:NO"
+}
+
+try_eject() {
+  local dev="$1"
+  {
+    echo "=== eject $(date -Iseconds) dev=$dev ==="
+  } >> "$LOG" 2>/dev/null || true
+  sleep 1
+  if command -v udisksctl >/dev/null 2>&1; then
+    udisksctl unmount -b "$dev" >>"$LOG" 2>&1 || true
+  fi
+  umount "$dev" >>"$LOG" 2>&1 || true
+  eject -i off "$dev" >>"$LOG" 2>&1 || true
+  if command -v udisksctl >/dev/null 2>&1; then
+    if udisksctl eject -b "$dev" >>"$LOG" 2>&1; then
+      return 0
+    fi
+  fi
+  eject -F "$dev" >>"$LOG" 2>&1 && return 0
+  eject -r "$dev" >>"$LOG" 2>&1 && return 0
+  eject -s "$dev" >>"$LOG" 2>&1 && return 0
+  return 1
 }
 
 # Wall-clock leftover, not remaining source duration (encode is usually >> 1x).
@@ -621,13 +689,25 @@ check_blank() {
     echo "BLANK:NONE"
     return 0
   fi
-  local info
-  info=$(timeout 4 dvd+rw-mediainfo "$dev" 2>&1) || true
-  printf '%s\n' "$info" >> "$LOG" 2>/dev/null || true
-
   if [[ -n "$iso_size" && -f "$iso_size" ]]; then
     iso_size=$(stat -c %s "$iso_size")
   fi
+
+  local props verdict
+  props=$(udevadm info --query=property "$dev" 2>/dev/null || true)
+  if [[ -n "$props" ]]; then
+    verdict=$(classify_udev_props "$props" "$iso_size")
+    printf 'UDEV:%s\n' "$verdict" >> "$LOG" 2>/dev/null || true
+    # NONE can mean empty tray OR udev has not settled; only trust YES/NO/TOO_SMALL here.
+    if [[ "$verdict" == "BLANK:YES" || "$verdict" == "BLANK:NO" || "$verdict" == "BLANK:TOO_SMALL" ]]; then
+      echo "$verdict"
+      return 0
+    fi
+  fi
+
+  local info
+  info=$(timeout -s INT 8 dvd+rw-mediainfo "$dev" 2>&1) || true
+  printf '%s\n' "$info" >> "$LOG" 2>/dev/null || true
   classify_blank "$info" "$iso_size"
 }
 
@@ -661,8 +741,18 @@ burn() {
   set +e
   set +o pipefail
   echo "PROGRESS:BURN:start"
-  growisofs -dvd-compat -Z "$dev"="$iso" 2>&1 | tee -a "$LOG" | burn_progress_lines
+  # QML Process has no TTY; USB trays also need a beat after the blank probe.
+  udevadm settle --timeout=5 >/dev/null 2>&1 || true
+  sleep 2
+  local burn_log rc
+  burn_log=$(mktemp /tmp/video-to-dvd-burn.XXXXXX)
+  growisofs -use-the-force-luke=tty -dvd-compat -Z "$dev"="$iso" 2>&1 \
+    | tee -a "$LOG" | tee "$burn_log" | burn_progress_lines
   rc=${PIPESTATUS[0]}
+  if grep -qiE 'no media mounted|cannot .*device|unable to open' "$burn_log"; then
+    rc=1
+  fi
+  rm -f "$burn_log"
   set -e
   set -o pipefail
   if [[ $rc -ne 0 ]]; then
@@ -670,11 +760,11 @@ burn() {
     fail "burn-failed"
     return 1
   fi
-  # Eject on success; do not fail the burn if the tray will not open.
-  eject "$dev" >>"$LOG" 2>&1 || eject -r "$dev" >>"$LOG" 2>&1 || true
+  try_eject "$dev" || true
   # ISO is disposable after a successful burn. Keep it if burn never ran, failed, or was cancelled.
   rm -f "$iso" || true
   rm -f "$PGID_FILE"
+  play_event_sound complete || true
   echo "RESULT:BURNED:$iso"
 }
 
