@@ -12,6 +12,6 @@
     "displayName": "Video to DVD",
     "category": "Media",
     "allowMultiple": false,
-    "defaultSection": "left"
+    "defaultSection": "right"
   }
 }
