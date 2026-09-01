@@ -15,6 +15,8 @@ Panel {
 
   property var anchorItem: null
   property var hostWidget: null
+  property var settings: ({})
+  property bool applyingSettings: false
   readonly property var barIdentity: hostWidget || root
 
   I18n { id: i18n }
@@ -175,16 +177,55 @@ Panel {
     }
   }
 
+  function applySettingsFromHost() {
+    root.applyingSettings = true
+    var std = "PAL"
+    if (root.settings && root.settings.tvStandard === "NTSC")
+      std = "NTSC"
+    root.tvStandard = std
+    if (root.settings && root.settings.selectedDevice)
+      root.selectedDevice = String(root.settings.selectedDevice)
+    root.applyingSettings = false
+  }
+
+  function persistChoices() {
+    if (root.applyingSettings || !root.hostWidget)
+      return
+    var entry = { id: "io.github.ruegen.video-to-dvd" }
+    var src = root.hostWidget.settings || {}
+    for (var key in src) {
+      if (key !== "id")
+        entry[key] = src[key]
+    }
+    entry.tvStandard = root.tvStandard
+    if (root.selectedDevice)
+      entry.selectedDevice = root.selectedDevice
+    root.hostWidget.settings = entry
+    if (root.hostWidget.bar && root.hostWidget.bar.shell
+        && typeof root.hostWidget.bar.shell.updateEntryInline === "function")
+      root.hostWidget.bar.shell.updateEntryInline(root.hostWidget.moduleName, entry)
+  }
+
+  onSettingsChanged: root.applySettingsFromHost()
+  onHostWidgetChanged: root.applySettingsFromHost()
+  onTvStandardChanged: root.persistChoices()
+  onSelectedDeviceChanged: root.persistChoices()
+
   function finalizeDrives() {
+    var preferred = root.selectedDevice
+    if (!preferred && root.settings && root.settings.selectedDevice)
+      preferred = String(root.settings.selectedDevice)
     var found = false
     var i
     for (i = 0; i < driveModel.count; i++) {
-      if (driveModel.get(i).devPath === root.selectedDevice) {
+      if (driveModel.get(i).devPath === preferred) {
         found = true
         break
       }
     }
-    if (!found)
+    if (found)
+      root.selectedDevice = preferred
+    else
       root.selectedDevice = driveModel.count > 0 ? driveModel.get(0).devPath : ""
   }
 
@@ -257,13 +298,7 @@ Panel {
       root.probeSetup()
   }
 
-  Component.onCompleted: {
-    if (!root.inputName)
-      root.inputName = root.t("file.none")
-    if (!root.statusText)
-      root.statusText = root.t("status.idle")
-    root.probeSetup()
-  }
+  Component.onCompleted: root.probeSetup()
 
   function stripFileUri(p) {
     if (p.indexOf("file://") === 0) {
@@ -797,7 +832,7 @@ Panel {
           id: fileLabel
           width: parent.width
           visible: root.showMainActions
-          text: root.t("file.label", root.inputName)
+          text: root.inputPath.length > 0 ? root.t("file.label", root.inputName) : root.t("file.none")
           elide: Text.ElideMiddle
           wrapMode: Text.NoWrap
           color: root.contentForeground

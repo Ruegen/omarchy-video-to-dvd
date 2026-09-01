@@ -29,15 +29,17 @@ Official Arch repos. The panel can install missing ones with `omarchy-pkg-add`:
 
 ## Install
 
-Repo: `~/apps/omarchy-video-to-dvd`. Drop-in under `~/.config/omarchy/plugins/io.github.ruegen.video-to-dvd/`, or `omarchy plugin add`. Reload the Omarchy shell after copying files.
+```bash
+omarchy plugin add https://github.com/Ruegen/omarchy-video-to-dvd.git
+```
+
+Or copy the repo into `~/.config/omarchy/plugins/io.github.ruegen.video-to-dvd/` and reload the Omarchy shell.
 
 ## Translations
 
-UI strings live in `i18n/*.json` (BCP-47 / ISO 639 tags). `en.json` is the source and fallback.
+UI text lives in `i18n/`. English is the default; German is included.
 
-To add a language, copy `i18n/en.json` to `i18n/fr.json` (or `xx.json`) and translate the values. Keys must stay identical.
-
-The panel picks a file from the desktop locale (`Qt.locale()`, then `LANG` / `LANGUAGE`): `de_DE.json`, then `de.json`, then `en.json`.
+To add a language, copy `i18n/en.json` to something like `i18n/fr.json` and translate the values. Leave the keys as they are. The plugin follows your system language.
 
 ## License
 

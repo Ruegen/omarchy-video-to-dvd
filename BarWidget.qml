@@ -16,9 +16,15 @@ BarWidget {
     ? panelLoader.item.opened === true
     : false
 
-  function open() { if (panelLoader.item) panelLoader.item.open() }
+  function open() {
+    root.injectPanel()
+    if (panelLoader.item) panelLoader.item.open()
+  }
   function close() { if (panelLoader.item) panelLoader.item.close() }
-  function toggle() { if (panelLoader.item) panelLoader.item.toggle() }
+  function toggle() {
+    root.injectPanel()
+    if (panelLoader.item) panelLoader.item.toggle()
+  }
   function closeForPopoutSwitch() { if (panelLoader.item) panelLoader.item.closeForPopoutSwitch() }
 
   function injectPanel() {
@@ -26,7 +32,11 @@ BarWidget {
     panelLoader.item.bar = root.bar
     panelLoader.item.anchorItem = button
     panelLoader.item.hostWidget = root
+    if ("settings" in panelLoader.item)
+      panelLoader.item.settings = root.settings
   }
+
+  onSettingsChanged: injectPanel()
 
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
