@@ -1,0 +1,4 @@
+:-( unable to read media info, retrying in 3 seconds...
+:-( unable to READ TOC: No medium found
+ASC=3Ah
+Device not ready

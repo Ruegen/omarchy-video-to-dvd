@@ -2,12 +2,12 @@
 set -euo pipefail
 
 # Line-buffer stdout when piped so QML sees SETUP:/PROGRESS: immediately.
-if [[ -z "${VIDEO_TO_DVD_STDBUF:-}" && ! -t 1 ]] && command -v stdbuf >/dev/null 2>&1; then
+# Skip when sourced (tests) so we do not re-exec.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]] && [[ -z "${VIDEO_TO_DVD_STDBUF:-}" && ! -t 1 ]] && command -v stdbuf >/dev/null 2>&1; then
   export VIDEO_TO_DVD_STDBUF=1
   exec stdbuf -oL -eL /bin/bash "$0" "$@"
 fi
 
-MODE="$1"; shift
 DVD_BYTES=4700372992      # DVD-5 (4.7GB marketing size)
 OVERHEAD=0.94              # headroom for VIDEO_TS/ISO overhead
 AUDIO_KBPS=192
@@ -297,17 +297,92 @@ space_check() {
   echo "SPACE:ok:${avail}"
 }
 
+parse_ffmpeg_time_seconds() {
+  local line="$1"
+  if [[ "$line" =~ time=([0-9]+):([0-9]+):([0-9]+) ]]; then
+    printf '%s' $((10#${BASH_REMATCH[1]} * 3600 + 10#${BASH_REMATCH[2]} * 60 + 10#${BASH_REMATCH[3]}))
+  fi
+}
+
+parse_ffmpeg_speed() {
+  local line="$1"
+  if [[ "$line" =~ speed=([0-9]+([.][0-9]+)?)x ]]; then
+    printf '%s' "${BASH_REMATCH[1]}"
+  fi
+}
+
+# growisofs prints percent with CR; turn those into one line per update.
+burn_progress_lines() {
+  tr '\r' '\n' | while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    echo "PROGRESS:BURN:$line"
+  done
+}
+
+# Classify dvd+rw-mediainfo text. iso_size is bytes or empty.
+classify_blank() {
+  local info="$1"
+  local iso_size="${2:-}"
+
+  if printf '%s\n' "$info" | grep -qiE \
+      'medium not present|no medium|not ready|cannot load|unable to (read|open)|no disc|no media|ASC=3Ah|Device not ready'; then
+    echo "BLANK:NONE"
+    return 0
+  fi
+
+  local is_blank=0
+  if printf '%s\n' "$info" | grep -qiE 'Disc status:[[:space:]]*blank'; then
+    is_blank=1
+  elif printf '%s\n' "$info" | grep -qiE 'Disc status:[[:space:]]*(complete|appendable|incomplete)'; then
+    if ! printf '%s\n' "$info" | grep -qiE 'Disc status:[[:space:]]*complete'; then
+      is_blank=1
+    fi
+  elif printf '%s\n' "$info" | grep -qiE 'Mounted Media:[[:space:]]*[0-9A-Fa-f]+h,'; then
+    echo "BLANK:NO"
+    return 0
+  fi
+
+  if (( is_blank )); then
+    local free_blocks
+    free_blocks=$(printf '%s\n' "$info" | grep -iE 'Free Blocks|Free Space' | head -n1 | grep -oE '[0-9]+' || true)
+    if [[ -n "$free_blocks" && -n "$iso_size" ]]; then
+      local free_bytes=$((free_blocks * 2048))
+      if (( free_bytes < iso_size )); then
+        echo "BLANK:TOO_SMALL"
+        return 0
+      fi
+    fi
+    echo "BLANK:YES"
+    return 0
+  fi
+
+  echo "BLANK:NO"
+}
+
+# Wall-clock leftover, not remaining source duration (encode is usually >> 1x).
 eta_status() {
-  local dur_i="$1" elapsed="$2" left mins
-  left=$((dur_i - elapsed))
-  (( left < 0 )) && left=0
-  if (( left < 45 )); then
-    printf '%s' "encoding-finishing"
-  elif (( left < 90 )); then
-    printf '%s' "encoding-eta|1"
+  local dur_i="$1" elapsed="$2" wall="$3" speed="${4:-}" pct_v="$5"
+  local left_media=$((dur_i - elapsed)) left_wall="" mins
+  (( left_media < 0 )) && left_media=0
+  [[ -z "$pct_v" ]] && pct_v=0
+
+  if [[ "$speed" =~ ^[0-9]+([.][0-9]+)?$ ]] && (( $(echo "$speed > 0.2" | bc) )); then
+    left_wall=$(echo "scale=0; $left_media / $speed" | bc)
+  elif (( wall >= 5 && elapsed >= 3 )); then
+    left_wall=$(( left_media * wall / elapsed ))
+  fi
+
+  if [[ -z "$left_wall" ]] || (( left_wall > 10800 )); then
+    printf '%s' "encoding-pct|${pct_v}"
+    return
+  fi
+  if (( left_wall < 45 )); then
+    printf '%s' "encoding-finishing|${pct_v}"
+  elif (( left_wall < 90 )); then
+    printf '%s' "encoding-eta|1|${pct_v}"
   else
-    mins=$(( (left + 30) / 60 ))
-    printf '%s' "encoding-eta|${mins}"
+    mins=$(( (left_wall + 30) / 60 ))
+    printf '%s' "encoding-eta|${mins}|${pct_v}"
   fi
 }
 
@@ -449,6 +524,8 @@ convert() {
 
   set +e
   set +o pipefail
+  local encode_start last_progress_key=""
+  encode_start=$(date +%s)
   ffmpeg -nostdin -y -i "$input" \
     -target "$target_arg" \
     -vf "$scale_filter" \
@@ -461,16 +538,23 @@ convert() {
     -c:a ac3 -b:a "${AUDIO_KBPS}k" -ac 2 -ar 48000 \
     -f dvd \
     "$work/video.mpg" 2>&1 | tr '\r' '\n' | tee -a "$LOG" | while IFS= read -r line; do
-      if [[ "$line" =~ time=([0-9]+):([0-9]+):([0-9]+) ]]; then
+      elapsed=$(parse_ffmpeg_time_seconds "$line")
+      if [[ -n "$elapsed" ]]; then
         if (( have_dur )); then
-          h=${BASH_REMATCH[1]}
-          m=${BASH_REMATCH[2]}
-          s=${BASH_REMATCH[3]}
-          elapsed=$((10#$h*3600 + 10#$m*60 + 10#$s))
           pct=$(( elapsed * 70 / dur_i ))
           (( pct > 70 )) && pct=70
           (( pct < 1 )) && pct=1
-          echo "PROGRESS:${pct}:$(eta_status "$dur_i" "$elapsed")"
+          pct_v=$(( elapsed * 100 / dur_i ))
+          (( pct_v > 99 )) && pct_v=99
+          (( pct_v < 0 )) && pct_v=0
+          speed=$(parse_ffmpeg_speed "$line")
+          wall=$(( $(date +%s) - encode_start ))
+          token=$(eta_status "$dur_i" "$elapsed" "$wall" "$speed" "$pct_v")
+          key="${pct}:${token}"
+          if [[ "$key" != "$last_progress_key" ]]; then
+            echo "PROGRESS:${pct}:${token}"
+            last_progress_key="$key"
+          fi
         else
           echo "PROGRESS:1:encoding"
         fi
@@ -532,57 +616,19 @@ check_blank() {
   if [[ $# -lt 1 && -n "$dev" ]]; then
     set -- "$dev"
   fi
-  maybe_newgrp_wrap "$dev" "$@"
+  # Read-only probe: never wrap in newgrp (that can hang with no TTY).
   if [[ -z "$dev" ]]; then
     echo "BLANK:NONE"
     return 0
   fi
   local info
-  info=$(dvd+rw-mediainfo "$dev" 2>&1) || true
+  info=$(timeout 4 dvd+rw-mediainfo "$dev" 2>&1) || true
   printf '%s\n' "$info" >> "$LOG" 2>/dev/null || true
 
-  # Empty tray / no medium — never treat as blank.
-  if printf '%s\n' "$info" | grep -qiE \
-      'medium not present|no medium|not ready|cannot load|unable to (read|open)|no disc|no media|ASC=3Ah|Device not ready'; then
-    echo "BLANK:NONE"
-    return 0
-  fi
-
-  # Check free blocks if an ISO size is provided
   if [[ -n "$iso_size" && -f "$iso_size" ]]; then
     iso_size=$(stat -c %s "$iso_size")
   fi
-
-  local is_blank=0
-  if printf '%s\n' "$info" | grep -qiE 'Disc status:[[:space:]]*blank'; then
-    is_blank=1
-  elif printf '%s\n' "$info" | grep -qiE 'Disc status:[[:space:]]*(complete|appendable|incomplete)'; then
-    # Check if appendable with enough free space
-    if ! printf '%s\n' "$info" | grep -qiE 'Disc status:[[:space:]]*complete'; then
-      is_blank=1
-    fi
-  elif printf '%s\n' "$info" | grep -qiE 'Mounted Media:[[:space:]]*[0-9A-Fa-f]+h,'; then
-    echo "BLANK:NO"
-    return 0
-  fi
-
-  if (( is_blank )); then
-    # Try to extract free sectors / capacity if possible from mediainfo (e.g. Free Blocks: / Next writable address:)
-    # DVD sectors are 2048 bytes.
-    local free_blocks
-    free_blocks=$(printf '%s\n' "$info" | grep -iE 'Free Blocks|Free Space' | head -n1 | grep -oE '[0-9]+' || true)
-    if [[ -n "$free_blocks" && -n "$iso_size" ]]; then
-      local free_bytes=$((free_blocks * 2048))
-      if (( free_bytes < iso_size )); then
-        echo "BLANK:TOO_SMALL"
-        return 0
-      fi
-    fi
-    echo "BLANK:YES"
-    return 0
-  fi
-
-  echo "BLANK:NO"
+  classify_blank "$info" "$iso_size"
 }
 
 burn() {
@@ -614,9 +660,8 @@ burn() {
   } >> "$LOG"
   set +e
   set +o pipefail
-  growisofs -dvd-compat -Z "$dev"="$iso" 2>&1 | tee -a "$LOG" | while IFS= read -r line; do
-    echo "PROGRESS:BURN:$line"
-  done
+  echo "PROGRESS:BURN:start"
+  growisofs -dvd-compat -Z "$dev"="$iso" 2>&1 | tee -a "$LOG" | burn_progress_lines
   rc=${PIPESTATUS[0]}
   set -e
   set -o pipefail
@@ -733,16 +778,19 @@ add_optical() {
   echo "SETUP:DONE"
 }
 
-case "$MODE" in
-  convert) convert "$@" ;;
-  check-blank) check_blank "$@" ;;
-  burn) burn "$@" ;;
-  notify) notify_user "$@" ;;
-  eject) eject_disc "$@" ;;
-  check-setup|deps) check_setup ;;
-  list-drives) list_drives ;;
-  space-check) space_check "$@" ;;
-  install-packages) install_packages ;;
-  add-optical) add_optical ;;
-  *) echo "Unknown mode: $MODE" >&2; exit 1 ;;
-esac
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  MODE="$1"; shift
+  case "$MODE" in
+    convert) convert "$@" ;;
+    check-blank) check_blank "$@" ;;
+    burn) burn "$@" ;;
+    notify) notify_user "$@" ;;
+    eject) eject_disc "$@" ;;
+    check-setup|deps) check_setup ;;
+    list-drives) list_drives ;;
+    space-check) space_check "$@" ;;
+    install-packages) install_packages ;;
+    add-optical) add_optical ;;
+    *) echo "Unknown mode: $MODE" >&2; exit 1 ;;
+  esac
+fi

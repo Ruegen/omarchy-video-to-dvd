@@ -1,0 +1,5 @@
+INQUIRY:                [HL-DT-ST][DVDRAM GSA-H62N]
+ Mounted Media:         1Ah, DVD-R sequential
+ Media ID:              RITEK
+ Disc status:           complete
+ Number of Sessions:    1

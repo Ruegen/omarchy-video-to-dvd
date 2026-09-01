@@ -41,6 +41,15 @@ UI text lives in `i18n/`. English is the default; German is included.
 
 To add a language, copy `i18n/en.json` to something like `i18n/fr.json` and translate the values. Leave the keys as they are. The plugin follows your system language.
 
+
+## Tests
+
+Shell helpers (leftover encode time, blank-disc parsing, progress lines) without a drive or a full encode:
+
+```bash
+bash tests/run.sh
+```
+
 ## License
 
 MIT. You can use, copy, and modify this plugin, including commercially.

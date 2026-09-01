@@ -1,0 +1,8 @@
+INQUIRY:                [HL-DT-ST][DVDRAM GSA-H62N]
+GET [CURRENT] CONFIGURATION:
+ Mounted Media:         1Bh, DVD+RW
+ Media ID:              CMC MAG
+ Current Write Speed:   4.0x1385=5540KB/s
+ Disc status:           blank
+ Number of Sessions:    1
+ Free Blocks:           2295104

@@ -119,12 +119,21 @@ Panel {
       return root.t("status.analyzing", bits[1] || "?", bits[2] || "", bits[3] || "")
     if (token === "encoding")
       return root.t("status.encoding")
+    if (token === "encoding-pct")
+      return root.t("status.encodingPct", bits[1] || "0")
     if (token === "encoding-finishing")
-      return root.t("status.encodingFinishing")
+      return bits[1] ? root.t("status.encodingFinishingPct", bits[1]) : root.t("status.encodingFinishing")
     if (token === "encoding-eta") {
-      if (bits[1] === "1")
+      var mins = bits[1] || ""
+      var pct = bits[2] || ""
+      if (pct) {
+        if (mins === "1")
+          return root.t("status.encodingEta1Pct", pct)
+        return root.t("status.encodingEtaPct", pct, mins)
+      }
+      if (mins === "1")
         return root.t("status.encodingEta1")
-      return root.t("status.encodingEta", bits[1] || "")
+      return root.t("status.encodingEta", mins)
     }
     if (token === "authoring")
       return root.t("status.authoring")
@@ -424,17 +433,49 @@ Panel {
     }
   }
 
+  function pollBlank() {
+    if (root.phase !== "wait" || root.userCancelled)
+      return
+    if (blankProc.running)
+      blankProc.running = false
+    Qt.callLater(function() {
+      if (root.phase === "wait" && !root.userCancelled)
+        blankProc.running = true
+    })
+  }
+
+  function tryBurnNow() {
+    if (root.phase !== "wait" || root.userCancelled)
+      return
+    root.statusText = root.t("status.checkingDrive")
+    root.pollBlank()
+  }
+
+  function startBurn() {
+    if (root.phase === "burn" || root.userCancelled)
+      return
+    waitTimer.stop()
+    root.phase = "burn"
+    root.progressPct = 0
+    root.statusText = root.t("status.burning")
+    if (burnProc.running)
+      burnProc.running = false
+    Qt.callLater(function() {
+      if (root.phase === "burn" && !root.userCancelled)
+        burnProc.running = true
+    })
+  }
+
   Timer {
     id: waitTimer
-    interval: 2000
+    interval: 1500
     repeat: true
     onTriggered: {
       if (root.phase !== "wait" || root.userCancelled) {
         waitTimer.stop()
         return
       }
-      if (!blankProc.running)
-        blankProc.running = true
+      root.pollBlank()
     }
   }
 
@@ -450,10 +491,7 @@ Panel {
         var tline = line.trim()
         if (root.phase !== "wait" || root.userCancelled) return
         if (tline === "BLANK:YES") {
-          waitTimer.stop()
-          root.phase = "burn"
-          root.statusText = root.t("status.burning")
-          burnProc.running = true
+          root.startBurn()
         } else if (tline === "BLANK:TOO_SMALL") {
           root.statusText = root.t("status.discTooSmall")
           if (!root.waitNotified) {
@@ -492,7 +530,10 @@ Panel {
             var p = Math.round(parseFloat(m[1]))
             if (!isNaN(p)) root.progressPct = p
           }
-          root.statusText = root.t("status.burning")
+          var shown = root.t("status.burning")
+          if (root.progressPct > 0)
+            shown = shown + " · " + root.progressPct + "%"
+          root.statusText = shown
         } else if (line.indexOf("RESULT:BURNED:") === 0) {
           root.converted = true
           root.resetIdle(root.t("status.dvdBurned"))
@@ -544,10 +585,10 @@ Panel {
     root.phase = "wait"
     root.busy = true
     root.waitNotified = false
+    root.progressPct = 0
     root.statusText = root.t("status.insertBlank")
-    if (!blankProc.running)
-      blankProc.running = true
     waitTimer.start()
+    root.pollBlank()
   }
 
   function startOneShot() {
@@ -883,13 +924,13 @@ Panel {
             width: (parent.width - Style.space(8)) / 2
             height: Style.space(32)
             radius: Style.cornerRadius
-            opacity: root.canMakeDvd ? 1.0 : 0.4
-            color: makeMouse.containsMouse && root.canMakeDvd
+            opacity: (root.phase === "wait" || root.canMakeDvd) ? 1.0 : 0.4
+            color: makeMouse.containsMouse && (root.phase === "wait" || root.canMakeDvd)
               ? Style.hoverFillFor(root.contentForeground, Color.accent)
               : Qt.rgba(root.contentForeground.r, root.contentForeground.g, root.contentForeground.b, 0.08)
             Text {
               anchors.centerIn: parent
-              text: root.t("action.makeDvd")
+              text: root.phase === "wait" ? root.t("action.burnNow") : root.t("action.makeDvd")
               color: root.contentForeground
               font.family: root.contentFontFamily
               font.pixelSize: Style.font.body
@@ -898,9 +939,14 @@ Panel {
               id: makeMouse
               anchors.fill: parent
               hoverEnabled: true
-              enabled: root.canMakeDvd
+              enabled: root.phase === "wait" || root.canMakeDvd
               cursorShape: Qt.PointingHandCursor
-              onClicked: root.startOneShot()
+              onClicked: {
+                if (root.phase === "wait")
+                  root.tryBurnNow()
+                else
+                  root.startOneShot()
+              }
             }
           }
 

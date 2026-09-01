@@ -1,0 +1,3 @@
+ Mounted Media:         13h, DVD-RW restricted overwrite
+ Disc status:           appendable
+ Free Blocks:           2000000
