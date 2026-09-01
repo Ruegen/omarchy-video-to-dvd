@@ -17,31 +17,48 @@ Panel {
   property var hostWidget: null
   readonly property var barIdentity: hostWidget || root
 
+  I18n { id: i18n }
+
+  function t(key) {
+    switch (arguments.length) {
+    case 0: return ""
+    case 1: return i18n.t(key)
+    case 2: return i18n.t(key, arguments[1])
+    case 3: return i18n.t(key, arguments[1], arguments[2])
+    default: return i18n.t(key, arguments[1], arguments[2], arguments[3])
+    }
+  }
+
   property string tvStandard: "PAL"
   property string scriptPath: Qt.resolvedUrl("video-to-dvd.sh").toString().replace("file://", "")
   property string inputPath: ""
-  property string inputName: "No file selected"
+  property string inputName: ""
   property string outputIso: ""
   property int progressPct: 0
-  property string statusText: "Idle"
+  property string statusText: ""
   property bool busy: false
   property bool converted: false
   property bool userCancelled: false
   property bool waitNotified: false
+  property bool jobHasError: false
   property int jobPgid: 0
   property string phase: "idle"
 
   property bool setupProbed: false
   property bool setupBusy: false
+  property string setupKind: ""
   property string missingPkgs: ""
   property bool packagesReady: false
   property string driveStatus: "none"
   property string selectedDevice: ""
 
+  onPackagesReadyChanged: root.applySetupStatus()
+
   readonly property int driveCount: driveModel.count
   readonly property bool showPackageSetup: root.setupProbed && !root.packagesReady
-  readonly property bool showDriveSetup: root.setupProbed && root.driveStatus === "need-permission"
-  readonly property bool canMakeDvd: !root.busy && root.packagesReady && root.inputPath.length > 0
+  readonly property bool showDriveSetup: root.setupProbed && root.packagesReady && root.driveStatus === "need-permission"
+  readonly property bool showMainActions: root.packagesReady && !root.showDriveSetup
+  readonly property bool canMakeDvd: !root.busy && root.showMainActions && root.inputPath.length > 0
 
   readonly property color contentForeground: bar ? bar.foreground : Color.foreground
   readonly property string contentFontFamily: bar ? bar.fontFamily : Style.font.family
@@ -74,6 +91,53 @@ Panel {
       root.statusText = status
   }
 
+  function translateDriveLabel(label) {
+    if (label.indexOf("drive.") !== 0)
+      return label
+    var space = label.indexOf(" ")
+    if (space < 0)
+      return root.t(label)
+    return root.t(label.substring(0, space)) + label.substring(space)
+  }
+
+  function errorText(err) {
+    if (!err)
+      return ""
+    var key = "error." + err
+    var tr = root.t(key)
+    if (tr !== key)
+      return tr
+    return err
+  }
+
+  function translateProgress(payload) {
+    var bits = payload.split("|")
+    var token = bits[0]
+    if (token === "analyzing")
+      return root.t("status.analyzing", bits[1] || "?", bits[2] || "", bits[3] || "")
+    if (token === "encoding")
+      return root.t("status.encoding")
+    if (token === "encoding-finishing")
+      return root.t("status.encodingFinishing")
+    if (token === "encoding-eta") {
+      if (bits[1] === "1")
+        return root.t("status.encodingEta1")
+      return root.t("status.encodingEta", bits[1] || "")
+    }
+    if (token === "authoring")
+      return root.t("status.authoring")
+    if (token === "iso")
+      return root.t("status.buildingIso")
+    if (token === "done")
+      return root.t("status.done")
+    if (token === "unsupported-format")
+      return root.t("status.unsupportedFormat", bits[1] || "")
+    var mapped = root.t("status." + token)
+    if (mapped !== "status." + token)
+      return mapped
+    return payload
+  }
+
   function parseSetupLine(line) {
     if (line.indexOf("MISSING:") === 0) {
       root.missingPkgs = line.substring(8).trim()
@@ -90,7 +154,24 @@ Panel {
       var path = bar >= 0 ? rest.substring(0, bar) : rest
       var label = bar >= 0 ? rest.substring(bar + 1) : rest
       if (path.length > 0)
-        driveModel.append({ "devPath": path, "devLabel": label })
+        driveModel.append({ "devPath": path, "devLabel": root.translateDriveLabel(label) })
+    }
+  }
+
+  function parseSetupEvent(line) {
+    if (line.indexOf("SETUP:OK") === 0) {
+      setupPollTimer.stop()
+      root.setupBusy = false
+      root.probeSetup(true)
+      return
+    }
+    if (line.indexOf("SETUP:INSTALLING") === 0 || line.indexOf("SETUP:DRIVE:") === 0) {
+      if (!setupPollTimer.running)
+        setupPollTimer.start()
+      return
+    }
+    if (line.indexOf("SETUP:DONE") === 0) {
+      root.probeSetup(true)
     }
   }
 
@@ -107,46 +188,66 @@ Panel {
       root.selectedDevice = driveModel.count > 0 ? driveModel.get(0).devPath : ""
   }
 
+  function clearSetupBusy() {
+    root.setupBusy = false
+    root.setupKind = ""
+    setupPollTimer.stop()
+  }
+
   function applySetupStatus() {
     if (root.busy) return
+
+    if (root.setupBusy && root.setupKind === "packages" && root.packagesReady)
+      root.clearSetupBusy()
+    if (root.setupBusy && root.setupKind === "drive" && root.driveStatus !== "need-permission")
+      root.clearSetupBusy()
+
     if (!root.packagesReady) {
-      root.statusText = "Install packages to continue"
-      return
-    }
-    if (root.driveStatus === "none") {
-      if (!root.inputPath)
-        root.statusText = "No DVD drive found"
+      root.statusText = (root.setupBusy && root.setupKind === "packages")
+        ? root.t("status.installingPackages")
+        : root.t("status.installPackages")
       return
     }
     if (root.driveStatus === "need-permission") {
-      if (!root.inputPath)
-        root.statusText = "Idle"
+      root.statusText = (root.setupBusy && root.setupKind === "drive")
+        ? root.t("status.allowingBurning")
+        : root.t("status.allowBurning")
       return
     }
-    if (root.statusText === "Install packages to continue"
-        || root.statusText === "No DVD drive found")
-      root.statusText = root.inputPath ? "Ready" : "Idle"
+    if (root.driveStatus === "none") {
+      root.statusText = root.t("status.noDrive")
+      return
+    }
+    root.statusText = root.inputPath ? root.t("status.ready") : root.t("status.idle")
   }
 
-  function probeSetup() {
-    if (root.setupBusy) return
-    if (checkSetupProc.running) return
+  function probeSetup(force) {
+    if (root.setupBusy && !force) return
+    if (checkSetupProc.running) {
+      if (force) return
+      checkSetupProc.running = false
+    }
     driveModel.clear()
+    checkSetupProc.command = ["bash", root.scriptPath, "check-setup"]
     checkSetupProc.running = true
   }
 
   function installPackages() {
     if (root.setupBusy || root.packagesReady || root.busy) return
+    root.setupKind = "packages"
     root.setupBusy = true
-    root.statusText = "Installing packages…"
+    root.statusText = root.t("status.installingPackages")
+    setupPollTimer.start()
     setupProc.command = ["bash", root.scriptPath, "install-packages"]
     setupProc.running = true
   }
 
   function allowDvdBurning() {
     if (root.setupBusy || root.driveStatus !== "need-permission" || root.busy) return
+    root.setupKind = "drive"
     root.setupBusy = true
-    root.statusText = "Allowing DVD burning…"
+    root.statusText = root.t("status.allowingBurning")
+    setupPollTimer.start()
     setupProc.command = ["bash", root.scriptPath, "add-optical"]
     setupProc.running = true
   }
@@ -156,7 +257,13 @@ Panel {
       root.probeSetup()
   }
 
-  Component.onCompleted: root.probeSetup()
+  Component.onCompleted: {
+    if (!root.inputName)
+      root.inputName = root.t("file.none")
+    if (!root.statusText)
+      root.statusText = root.t("status.idle")
+    root.probeSetup()
+  }
 
   function stripFileUri(p) {
     if (p.indexOf("file://") === 0) {
@@ -181,17 +288,19 @@ Panel {
         root.outputIso = root.deriveOutputIso(p)
         root.converted = false
         root.progressPct = 0
-        root.statusText = root.driveCount === 0 ? "No DVD drive found" : "Ready"
+        root.statusText = root.driveCount === 0 ? root.t("status.noDrive") : root.t("status.ready")
       }
     }
     onExited: function(code) {
       // Exit 1 = nothing picked (not an error).
       if (code > 1 && !root.busy)
-        root.statusText = "Could not open the file picker"
+        root.statusText = root.t("status.pickerFailed")
     }
   }
   function pickFile() {
     if (root.busy) return
+    pickerProc.command = ["omarchy-file-select", "--title", root.t("picker.title"),
+                          "--extensions", "mp4 mkv mov avi webm m4v ts mts m2ts wmv flv"]
     pickerProc.running = true
   }
 
@@ -214,9 +323,27 @@ Panel {
   Process {
     id: setupProc
     command: ["bash", root.scriptPath, "install-packages"]
+    stdout: SplitParser {
+      onRead: function(line) { root.parseSetupEvent(line.trim()) }
+    }
     onExited: function() {
       root.setupBusy = false
-      root.probeSetup()
+      root.setupKind = ""
+      setupPollTimer.stop()
+      root.probeSetup(true)
+    }
+  }
+
+  Timer {
+    id: setupPollTimer
+    interval: 2000
+    repeat: true
+    onTriggered: {
+      if (!root.setupBusy) {
+        setupPollTimer.stop()
+        return
+      }
+      root.probeSetup(true)
     }
   }
 
@@ -237,26 +364,28 @@ Panel {
       onRead: function(line) {
         if (root.parseJobLine(line)) return
         if (line.indexOf("PROGRESS:") === 0) {
-          var parts = line.split(":")
-          var pct = parseInt(parts[1])
+          var rest = line.substring(9)
+          var colon = rest.indexOf(":")
+          var pct = parseInt(colon >= 0 ? rest.substring(0, colon) : rest)
+          var payload = colon >= 0 ? rest.substring(colon + 1) : ""
           if (!isNaN(pct)) root.progressPct = pct
-          root.statusText = parts.slice(2).join(":")
+          root.statusText = root.translateProgress(payload)
         } else if (line.indexOf("RESULT:OK:") === 0) {
-          root.statusText = "Converted"
+          root.statusText = root.t("status.converted")
           root.converted = true
           if (!root.userCancelled) {
             if (root.driveCount === 0)
-              root.resetIdle("No DVD drive found")
+              root.resetIdle(root.t("status.noDrive"))
             else
               root.enterWaitForDisc()
           }
         } else if (line.indexOf("RESULT:ERROR:") === 0) {
-          root.handleJobError(line.substring(13), "DVD convert failed")
+          root.handleJobError(line.substring(13), root.t("notify.convertFailed.title"))
         }
       }
     }
     onExited: function(code) {
-      root.onJobExited(code, "convert", "DVD convert failed", "Convert failed (exit " + code + ")")
+      root.onJobExited(code, "convert", root.t("notify.convertFailed.title"), root.t("status.convertFailed", code))
     }
   }
 
@@ -283,30 +412,30 @@ Panel {
           : ["bash", root.scriptPath, "check-blank"])
     stdout: SplitParser {
       onRead: function(line) {
-        var t = line.trim()
+        var tline = line.trim()
         if (root.phase !== "wait" || root.userCancelled) return
-        if (t === "BLANK:YES") {
+        if (tline === "BLANK:YES") {
           waitTimer.stop()
           root.phase = "burn"
-          root.statusText = "Burning"
+          root.statusText = root.t("status.burning")
           burnProc.running = true
-        } else if (t === "BLANK:TOO_SMALL") {
-          root.statusText = "Disc is too small for this ISO — insert a higher capacity DVD"
+        } else if (tline === "BLANK:TOO_SMALL") {
+          root.statusText = root.t("status.discTooSmall")
           if (!root.waitNotified) {
             root.waitNotified = true
-            root.notify("Disc too small", "The inserted disc lacks sufficient capacity for the video ISO.")
+            root.notify(root.t("notify.discTooSmall.title"), root.t("notify.discTooSmall.body"))
           }
-        } else if (t === "BLANK:NO") {
-          root.statusText = "Disc is not blank — insert a blank DVD"
+        } else if (tline === "BLANK:NO") {
+          root.statusText = root.t("status.discNotBlank")
           if (!root.waitNotified) {
             root.waitNotified = true
-            root.notify("Insert a blank DVD", "Disc is not blank — insert a blank DVD.")
+            root.notify(root.t("notify.insertBlank.title"), root.t("notify.insertBlank.body"))
           }
         } else {
-          root.statusText = "Insert a blank DVD"
+          root.statusText = root.t("status.insertBlank")
           if (!root.waitNotified) {
             root.waitNotified = true
-            root.notify("Waiting for a blank DVD", "Insert a blank DVD to continue.")
+            root.notify(root.t("notify.waiting.title"), root.t("notify.waiting.body"))
           }
         }
       }
@@ -322,18 +451,24 @@ Panel {
       onRead: function(line) {
         if (root.parseJobLine(line)) return
         if (line.indexOf("PROGRESS:BURN:") === 0) {
-          root.statusText = line.substring(14)
+          var raw = line.substring(14)
+          var m = raw.match(/\(\s*([0-9]+(?:\.[0-9]+)?)\s*%\)/)
+          if (m) {
+            var p = Math.round(parseFloat(m[1]))
+            if (!isNaN(p)) root.progressPct = p
+          }
+          root.statusText = root.t("status.burning")
         } else if (line.indexOf("RESULT:BURNED:") === 0) {
           root.converted = true
-          root.resetIdle("DVD burned")
-          root.notify("DVD burned", "The disc is ready.")
+          root.resetIdle(root.t("status.dvdBurned"))
+          root.notify(root.t("notify.burned.title"), root.t("notify.burned.body"))
         } else if (line.indexOf("RESULT:ERROR:") === 0) {
-          root.handleJobError(line.substring(13), "DVD burn failed")
+          root.handleJobError(line.substring(13), root.t("notify.burnFailed.title"))
         }
       }
     }
     onExited: function(code) {
-      root.onJobExited(code, "burn", "DVD burn failed", "Burn failed (exit " + code + ")")
+      root.onJobExited(code, "burn", root.t("notify.burnFailed.title"), root.t("status.burnFailedExit", code))
     }
   }
 
@@ -341,27 +476,28 @@ Panel {
     if (root.userCancelled || err === "cancelled") {
       if (err === "cancelled" && !root.userCancelled) {
         root.userCancelled = true
-        root.notify("DVD cancelled", "The DVD job was cancelled.")
+        root.notify(root.t("notify.cancelled.title"), root.t("notify.cancelled.body"))
       }
       waitTimer.stop()
-      root.resetIdle("Cancelled")
+      root.resetIdle(root.t("status.cancelled"))
       return
     }
     waitTimer.stop()
-    root.resetIdle("Error: " + err)
+    root.jobHasError = true
+    root.resetIdle(root.t("status.error", root.errorText(err)))
     root.notify(failTitle, root.statusText)
   }
 
   function onJobExited(code, expectedPhase, failTitle, fallbackStatus) {
     if (root.userCancelled) {
       waitTimer.stop()
-      root.resetIdle("Cancelled")
+      root.resetIdle(root.t("status.cancelled"))
       return
     }
     if (code === 0) return
     if (root.phase !== expectedPhase) return
     waitTimer.stop()
-    if (root.statusText.indexOf("Error:") !== 0)
+    if (!root.jobHasError)
       root.statusText = fallbackStatus
     root.busy = false
     root.phase = "idle"
@@ -373,7 +509,7 @@ Panel {
     root.phase = "wait"
     root.busy = true
     root.waitNotified = false
-    root.statusText = "Insert a blank DVD"
+    root.statusText = root.t("status.insertBlank")
     if (!blankProc.running)
       blankProc.running = true
     waitTimer.start()
@@ -381,16 +517,17 @@ Panel {
 
   function startOneShot() {
     if (root.busy) return
-    if (!root.packagesReady) { root.statusText = "Install packages first"; return }
-    if (!root.inputPath) { root.statusText = "Select a file first"; return }
+    if (!root.packagesReady) { root.statusText = root.t("status.installPackagesFirst"); return }
+    if (!root.inputPath) { root.statusText = root.t("status.selectFileFirst"); return }
     root.userCancelled = false
     root.waitNotified = false
+    root.jobHasError = false
     root.jobPgid = 0
     root.busy = true
     root.converted = false
     root.progressPct = 0
     root.phase = "convert"
-    root.statusText = "Starting"
+    root.statusText = root.t("status.starting")
     convertProc.running = true
   }
 
@@ -424,9 +561,9 @@ Panel {
       blankProc.running = false
     }
 
-    root.resetIdle("Cancelled")
+    root.resetIdle(root.t("status.cancelled"))
     root.progressPct = 0
-    root.notify("DVD cancelled", "The DVD job was cancelled.")
+    root.notify(root.t("notify.cancelled.title"), root.t("notify.cancelled.body"))
   }
 
   KeyboardPanel {
@@ -452,7 +589,7 @@ Panel {
 
         Text {
           width: parent.width
-          text: "VIDEO TO DVD"
+          text: root.t("app.header")
           color: Qt.darker(root.contentForeground, 1.5)
           font.family: root.contentFontFamily
           font.pixelSize: Style.font.bodySmall
@@ -467,7 +604,7 @@ Panel {
 
           Text {
             width: parent.width
-            text: "Needs a few Arch packages to convert and burn."
+            text: root.t("setup.needsPackages")
             color: root.contentForeground
             wrapMode: Text.Wrap
             font.family: root.contentFontFamily
@@ -477,7 +614,7 @@ Panel {
           Text {
             width: parent.width
             visible: root.missingPkgs.length > 0
-            text: "Missing: " + root.missingPkgs.split(",").join(", ")
+            text: root.t("setup.missing", root.missingPkgs.split(",").join(", "))
             color: Qt.darker(root.contentForeground, 1.3)
             wrapMode: Text.Wrap
             font.family: root.contentFontFamily
@@ -494,7 +631,7 @@ Panel {
               : Qt.rgba(root.contentForeground.r, root.contentForeground.g, root.contentForeground.b, 0.08)
             Text {
               anchors.centerIn: parent
-              text: "Install packages"
+              text: root.t("action.installPackages")
               color: root.contentForeground
               font.family: root.contentFontFamily
               font.pixelSize: Style.font.body
@@ -517,7 +654,7 @@ Panel {
 
           Text {
             width: parent.width
-            text: "This account cannot use the DVD drive yet."
+            text: root.t("setup.needsDrivePermission")
             color: root.contentForeground
             wrapMode: Text.Wrap
             font.family: root.contentFontFamily
@@ -534,7 +671,7 @@ Panel {
               : Qt.rgba(root.contentForeground.r, root.contentForeground.g, root.contentForeground.b, 0.08)
             Text {
               anchors.centerIn: parent
-              text: "Allow DVD burning"
+              text: root.t("action.allowDvdBurning")
               color: root.contentForeground
               font.family: root.contentFontFamily
               font.pixelSize: Style.font.body
@@ -554,10 +691,13 @@ Panel {
           id: tvStandardRow
           width: parent.width
           spacing: Style.space(8)
-          visible: !root.busy
+          visible: !root.busy && root.showMainActions
 
           Repeater {
-            model: [ { label: "PAL (576i 25fps)", std: "PAL" }, { label: "NTSC (480i 29.97fps)", std: "NTSC" } ]
+            model: [
+              { labelKey: "tv.pal", std: "PAL" },
+              { labelKey: "tv.ntsc", std: "NTSC" }
+            ]
             Rectangle {
               width: (tvStandardRow.width - tvStandardRow.spacing) / 2
               height: Style.space(32)
@@ -567,7 +707,7 @@ Panel {
                 : (tvMouse.containsMouse ? Style.hoverFillFor(root.contentForeground, Color.accent) : Qt.rgba(root.contentForeground.r, root.contentForeground.g, root.contentForeground.b, 0.08))
               Text {
                 anchors.centerIn: parent
-                text: modelData.label
+                text: root.t(modelData.labelKey)
                 color: root.contentForeground
                 font.family: root.contentFontFamily
                 font.pixelSize: Style.font.caption
@@ -587,7 +727,7 @@ Panel {
           id: driveRow
           width: parent.width
           spacing: Style.space(8)
-          visible: root.driveCount >= 2
+          visible: root.showMainActions && root.driveCount >= 2
 
           Repeater {
             model: driveModel
@@ -631,13 +771,14 @@ Panel {
           width: parent.width
           height: Style.space(32)
           radius: Style.cornerRadius
+          visible: root.showMainActions
           opacity: root.busy ? 0.4 : 1.0
           color: selectMouse.containsMouse && !root.busy
             ? Style.hoverFillFor(root.contentForeground, Color.accent)
             : Qt.rgba(root.contentForeground.r, root.contentForeground.g, root.contentForeground.b, 0.08)
           Text {
             anchors.centerIn: parent
-            text: "Select video"
+            text: root.t("action.selectVideo")
             color: root.contentForeground
             font.family: root.contentFontFamily
             font.pixelSize: Style.font.body
@@ -655,7 +796,8 @@ Panel {
         Text {
           id: fileLabel
           width: parent.width
-          text: "File: " + root.inputName
+          visible: root.showMainActions
+          text: root.t("file.label", root.inputName)
           elide: Text.ElideMiddle
           wrapMode: Text.NoWrap
           color: root.contentForeground
@@ -700,6 +842,7 @@ Panel {
         Row {
           width: parent.width
           spacing: Style.space(8)
+          visible: root.showMainActions
 
           Rectangle {
             width: (parent.width - Style.space(8)) / 2
@@ -711,7 +854,7 @@ Panel {
               : Qt.rgba(root.contentForeground.r, root.contentForeground.g, root.contentForeground.b, 0.08)
             Text {
               anchors.centerIn: parent
-              text: "Make DVD"
+              text: root.t("action.makeDvd")
               color: root.contentForeground
               font.family: root.contentFontFamily
               font.pixelSize: Style.font.body
@@ -736,7 +879,7 @@ Panel {
               : Qt.rgba(root.contentForeground.r, root.contentForeground.g, root.contentForeground.b, 0.08)
             Text {
               anchors.centerIn: parent
-              text: "Cancel"
+              text: root.t("action.cancel")
               color: root.contentForeground
               font.family: root.contentFontFamily
               font.pixelSize: Style.font.body
@@ -754,7 +897,7 @@ Panel {
 
         Text {
           width: parent.width
-          text: "Only convert and burn content you have the right to copy."
+          text: root.t("legal")
           color: Qt.darker(root.contentForeground, 1.5)
           wrapMode: Text.Wrap
           font.family: root.contentFontFamily

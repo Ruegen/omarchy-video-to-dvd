@@ -10,6 +10,7 @@ BarWidget {
   id: root
   moduleName: "io.github.ruegen.video-to-dvd"
 
+  I18n { id: i18n }
 
   readonly property bool opened: panelLoader.item
     ? panelLoader.item.opened === true
@@ -48,7 +49,7 @@ BarWidget {
     bar: root.bar
     fontFamily: "Font Awesome 7 Free Solid"
     text: "\uf51f"
-    tooltipText: "Open Video to DVD"
+    tooltipText: i18n.t("bar.tooltip")
     onPressed: function(buttonCode) {
       if (buttonCode === Qt.LeftButton) root.toggle()
     }

@@ -1,6 +1,12 @@
 #!/bin/bash
 set -euo pipefail
 
+# Line-buffer stdout when piped so QML sees SETUP:/PROGRESS: immediately.
+if [[ -z "${VIDEO_TO_DVD_STDBUF:-}" && ! -t 1 ]] && command -v stdbuf >/dev/null 2>&1; then
+  export VIDEO_TO_DVD_STDBUF=1
+  exec stdbuf -oL -eL /bin/bash "$0" "$@"
+fi
+
 MODE="$1"; shift
 DVD_BYTES=4700372992      # DVD-5 (4.7GB marketing size)
 OVERHEAD=0.94              # headroom for VIDEO_TS/ISO overhead
@@ -63,6 +69,9 @@ ensure_session() {
     return 0
   fi
   export VIDEO_TO_DVD_SESSION=1
+  if command -v stdbuf >/dev/null 2>&1; then
+    exec setsid --wait stdbuf -oL -eL /bin/bash "$0" "$MODE" "$@"
+  fi
   exec setsid --wait /bin/bash "$0" "$MODE" "$@"
 }
 
@@ -119,9 +128,9 @@ drive_human_label() {
   case "$m" in
     ""|"Mass Storage Device"|"USB Mass Storage Device"|"USB Mass Storage")
       if [[ "$t" == "usb" ]]; then
-        printf '%s' "USB DVD drive"
+        printf '%s' "drive.usb"
       else
-        printf '%s' "Internal DVD drive"
+        printf '%s' "drive.internal"
       fi
       ;;
     *)
@@ -268,7 +277,7 @@ space_check() {
   local dir avail need
   need=$(iso_need_bytes)
   if [[ -z "$target" ]]; then
-    echo "RESULT:ERROR:Not enough free space next to the video"
+    echo "RESULT:ERROR:not-enough-space"
     return 1
   fi
   if [[ -d "$target" ]]; then
@@ -277,12 +286,12 @@ space_check() {
     dir=$(dirname -- "$target")
   fi
   if [[ ! -d "$dir" ]]; then
-    echo "RESULT:ERROR:Not enough free space next to the video"
+    echo "RESULT:ERROR:not-enough-space"
     return 1
   fi
   avail=$(dir_avail_bytes "$dir")
   if [[ ! "$avail" =~ ^[0-9]+$ ]] || (( avail < need )); then
-    echo "RESULT:ERROR:Not enough free space next to the video"
+    echo "RESULT:ERROR:not-enough-space"
     return 1
   fi
   echo "SPACE:ok:${avail}"
@@ -293,12 +302,12 @@ eta_status() {
   left=$((dur_i - elapsed))
   (( left < 0 )) && left=0
   if (( left < 45 )); then
-    printf '%s' "Encoding · finishing"
+    printf '%s' "encoding-finishing"
   elif (( left < 90 )); then
-    printf '%s' "Encoding · 1 min left"
+    printf '%s' "encoding-eta|1"
   else
     mins=$(( (left + 30) / 60 ))
-    printf '%s' "Encoding · ${mins} min left"
+    printf '%s' "encoding-eta|${mins}"
   fi
 }
 
@@ -318,7 +327,7 @@ convert() {
   case "$ext" in
     mp4|mkv|mov|avi|webm|m4v|ts|mts|m2ts|wmv|flv) ;;
     *)
-      echo "PROGRESS:0:Unsupported format: .$ext"
+      echo "PROGRESS:0:unsupported-format|.$ext"
       fail "unsupported-format"
       return 1
       ;;
@@ -330,7 +339,7 @@ convert() {
   fi
 
   if ! space_check "$output_iso" >/dev/null; then
-    fail "Not enough free space next to the video"
+    fail "not-enough-space"
     return 1
   fi
 
@@ -436,7 +445,7 @@ convert() {
     vcodec="mpeg2_amf"
   fi
 
-  echo "PROGRESS:1:Analyzing source (${src_w:-?}x${src_h:-?}, $dvd_aspect_flag $tv_std DVD)"
+  echo "PROGRESS:1:analyzing|${src_w:-?}x${src_h:-?}|$dvd_aspect_flag|$tv_std"
 
   set +e
   set +o pipefail
@@ -463,7 +472,7 @@ convert() {
           (( pct < 1 )) && pct=1
           echo "PROGRESS:${pct}:$(eta_status "$dur_i" "$elapsed")"
         else
-          echo "PROGRESS:1:Encoding video"
+          echo "PROGRESS:1:encoding"
         fi
       fi
     done
@@ -478,7 +487,7 @@ convert() {
     return 1
   fi
 
-  echo "PROGRESS:75:Authoring DVD structure"
+  echo "PROGRESS:75:authoring"
   export VIDEO_FORMAT="$tv_std"
   set +e
   dvdauthor -o "$work/dvd" -t -v "$dvdauthor_vopts" "$work/video.mpg" >>"$LOG" 2>&1
@@ -497,7 +506,7 @@ convert() {
     return 1
   fi
 
-  echo "PROGRESS:90:Building ISO"
+  echo "PROGRESS:90:iso"
   set +e
   genisoimage -dvd-video -V "DVD_VIDEO" -o "$output_iso" "$work/dvd" >>"$LOG" 2>&1
   iso_status=$?
@@ -513,7 +522,7 @@ convert() {
   rm -rf "$work"
   WORK_DIR=""
   rm -f "$PGID_FILE"
-  echo "PROGRESS:100:Done"
+  echo "PROGRESS:100:done"
   echo "RESULT:OK:$output_iso"
 }
 
@@ -624,20 +633,25 @@ burn() {
   echo "RESULT:BURNED:$iso"
 }
 
-REQUIRED_PKGS=(ffmpeg dvdauthor cdrtools dvd+rw-tools bc)
-
 pkg_missing_list() {
-  local missing=() pkg
-  for pkg in "${REQUIRED_PKGS[@]}"; do
-    if ! pacman -Q "$pkg" &>/dev/null; then
-      missing+=("$pkg")
-    fi
-  done
-  # eject is util-linux; only ask for it if the binary is actually gone.
-  if ! command -v eject >/dev/null 2>&1; then
-    if ! pacman -Q util-linux &>/dev/null; then
-      missing+=("util-linux")
-    fi
+  local missing=()
+  if ! command -v ffmpeg >/dev/null 2>&1 && ! pacman -Q ffmpeg &>/dev/null; then
+    missing+=("ffmpeg")
+  fi
+  if ! command -v dvdauthor >/dev/null 2>&1 && ! pacman -Q dvdauthor &>/dev/null; then
+    missing+=("dvdauthor")
+  fi
+  if ! command -v genisoimage >/dev/null 2>&1 && ! command -v mkisofs >/dev/null 2>&1 && ! pacman -Q cdrtools &>/dev/null; then
+    missing+=("cdrtools")
+  fi
+  if ! command -v growisofs >/dev/null 2>&1 && ! pacman -Q dvd+rw-tools &>/dev/null; then
+    missing+=("dvd+rw-tools")
+  fi
+  if ! command -v bc >/dev/null 2>&1 && ! pacman -Q bc &>/dev/null; then
+    missing+=("bc")
+  fi
+  if ! command -v eject >/dev/null 2>&1 && ! pacman -Q util-linux &>/dev/null; then
+    missing+=("util-linux")
   fi
   local IFS=,
   echo "${missing[*]}"
@@ -683,14 +697,10 @@ launch_setup_terminal() {
   local presentation_script="omarchy-show-logo; ${cmd}; if (( \$? != 130 )); then omarchy-show-done; fi"
   echo "SETUP:CMD:${cmd}"
   if [[ "${VIDEO_TO_DVD_DRY_RUN:-}" == "1" ]]; then
-    printf 'DRY-RUN: uwsm-app -- xdg-terminal-exec --app-id=org.omarchy.terminal --title=Omarchy -e bash -c %q\n' "$presentation_script"
+    printf 'DRY-RUN: xdg-terminal-exec --app-id=org.omarchy.terminal --title=Omarchy -e bash -c %q\n' "$presentation_script"
     return 0
   fi
-  if command -v uwsm-app >/dev/null 2>&1; then
-    uwsm-app -- xdg-terminal-exec --app-id=org.omarchy.terminal --title=Omarchy -e bash -c "$presentation_script"
-  else
-    xdg-terminal-exec --app-id=org.omarchy.terminal --title=Omarchy -e bash -c "$presentation_script"
-  fi
+  xdg-terminal-exec --app-id=org.omarchy.terminal --title=Omarchy -e bash -c "$presentation_script"
 }
 
 install_packages() {
