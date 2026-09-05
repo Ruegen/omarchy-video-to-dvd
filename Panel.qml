@@ -32,7 +32,7 @@ Panel {
   }
 
   property string tvStandard: "PAL"
-  property string scriptPath: Qt.resolvedUrl("video-to-dvd.sh").toString().replace("file://", "")
+  property string helperPath: Qt.resolvedUrl("oma-dvd").toString().replace("file://", "")
   property string inputPath: ""
   property string inputName: ""
   property string outputIso: ""
@@ -92,7 +92,7 @@ Panel {
   }
 
   function notify(title, body, sound) {
-    var args = ["bash", root.scriptPath, "notify", title, body || ""]
+    var args = [root.helperPath, "notify", title, body || ""]
     if (sound)
       args.push(sound)
     notifyProc.exec(args)
@@ -320,7 +320,7 @@ Panel {
       checkSetupProc.running = false
     }
     driveModel.clear()
-    checkSetupProc.command = ["bash", root.scriptPath, "check-setup"]
+    checkSetupProc.command = [root.helperPath, "check-setup"]
     checkSetupProc.running = true
   }
 
@@ -330,7 +330,7 @@ Panel {
     root.setupBusy = true
     root.statusText = root.t("status.installingPackages")
     setupPollTimer.start()
-    setupProc.command = ["bash", root.scriptPath, "install-packages"]
+    setupProc.command = [root.helperPath, "install-packages"]
     setupProc.running = true
   }
 
@@ -340,7 +340,7 @@ Panel {
     root.setupBusy = true
     root.statusText = root.t("status.allowingBurning")
     setupPollTimer.start()
-    setupProc.command = ["bash", root.scriptPath, "add-optical"]
+    setupProc.command = [root.helperPath, "add-optical"]
     setupProc.running = true
   }
 
@@ -395,7 +395,7 @@ Panel {
 
   Process {
     id: checkSetupProc
-    command: ["bash", root.scriptPath, "check-setup"]
+    command: [root.helperPath, "check-setup"]
     stdout: SplitParser {
       onRead: function(line) { root.parseSetupLine(line.trim()) }
     }
@@ -408,7 +408,7 @@ Panel {
 
   Process {
     id: setupProc
-    command: ["bash", root.scriptPath, "install-packages"]
+    command: [root.helperPath, "install-packages"]
     stdout: SplitParser {
       onRead: function(line) { root.parseSetupEvent(line.trim()) }
     }
@@ -445,7 +445,7 @@ Panel {
   Process {
     id: convertProc
     environment: ["VIDEO_TO_DVD_STANDARD=" + root.tvStandard]
-    command: ["bash", root.scriptPath, "convert", root.inputPath, root.outputIso]
+    command: [root.helperPath, "convert", root.inputPath, root.outputIso]
     stdout: SplitParser {
       onRead: function(line) {
         if (root.parseJobLine(line)) return
@@ -526,10 +526,10 @@ Panel {
   Process {
     id: blankProc
     command: root.outputIso.length > 0 && root.selectedDevice.length > 0
-      ? ["bash", root.scriptPath, "check-blank", root.selectedDevice, root.outputIso]
+      ? [root.helperPath, "check-blank", root.selectedDevice, root.outputIso]
       : (root.selectedDevice.length > 0
-          ? ["bash", root.scriptPath, "check-blank", root.selectedDevice]
-          : ["bash", root.scriptPath, "check-blank"])
+          ? [root.helperPath, "check-blank", root.selectedDevice]
+          : [root.helperPath, "check-blank"])
     stdout: SplitParser {
       onRead: function(line) {
         var tline = line.trim()
@@ -562,8 +562,8 @@ Panel {
   Process {
     id: burnProc
     command: root.selectedDevice.length > 0
-      ? ["bash", root.scriptPath, "burn", root.outputIso, root.selectedDevice]
-      : ["bash", root.scriptPath, "burn", root.outputIso]
+      ? [root.helperPath, "burn", root.outputIso, root.selectedDevice]
+      : [root.helperPath, "burn", root.outputIso]
     stdout: SplitParser {
       onRead: function(line) {
         if (root.parseJobLine(line)) return

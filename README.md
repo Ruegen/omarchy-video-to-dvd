@@ -1,6 +1,6 @@
 # Video to DVD
 
-Version 1.0.1
+Version 1.1.0
 
 Omarchy bar widget: pick a video → PAL or NTSC DVD-Video ISO → wait for a blank disc → burn → eject.
 
@@ -16,7 +16,13 @@ omarchy plugin add https://github.com/Ruegen/omarchy-video-to-dvd.git --enable
 
 Or copy the repo into `~/.config/omarchy/plugins/io.github.ruegen.video-to-dvd/` and reload the Omarchy shell.
 
-Missing Arch packages (ffmpeg, dvdauthor, cdrtools, dvd+rw-tools, bc) are installed from the panel with `omarchy-pkg-add`. `eject` comes from util-linux.
+The panel talks to a Rust helper (`oma-dvd`) that still runs ffmpeg, dvdauthor, genisoimage/mkisofs, and growisofs. Missing Arch packages are installed from the panel with `omarchy-pkg-add`. `eject` comes from util-linux.
+
+Build the helper after a git checkout:
+
+```sh
+cargo build --release && cp -f target/release/oma-dvd .
+```
 
 ## Usage
 
@@ -48,11 +54,10 @@ Official Arch repos. The panel can install missing ones with `omarchy-pkg-add`:
 
 - ffmpeg
 - dvdauthor
-- cdrtools (genisoimage / mkisofs, cdrecord)
+- cdrtools (genisoimage / mkisofs)
 - dvd+rw-tools (growisofs, dvd+rw-mediainfo)
-- bc
 
-`eject` comes from util-linux (already on Arch).
+`eject` comes from util-linux (already on Arch). Building `oma-dvd` needs `rust` / `cargo`.
 
 ## Translations
 
@@ -62,10 +67,10 @@ To add a language, copy `i18n/en.json` to something like `i18n/fr.json` and tran
 
 ## Tests
 
-Shell helpers (leftover encode time, blank-disc parsing, progress lines) without a drive or a full encode:
+Helper unit tests (leftover encode time, blank-disc parsing, path/ISO safety) without a drive or a full encode:
 
 ```sh
-bash tests/run.sh
+cargo test
 ```
 
 ## License
