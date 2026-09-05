@@ -79,6 +79,14 @@ Panel {
     return false
   }
 
+  function plainText(s) {
+    return String(s == null ? "" : s).replace(/[\u0000-\u001f\u007f]/g, "")
+  }
+
+  function isOpticalDevice(path) {
+    return /^\/dev\/sr[0-9]+$/.test(String(path || ""))
+  }
+
   function deriveOutputIso(path) {
     return path.replace(/\.[^./]+$/, "") + ".iso"
   }
@@ -197,8 +205,8 @@ Panel {
       var bar = rest.indexOf("|")
       var path = bar >= 0 ? rest.substring(0, bar) : rest
       var label = bar >= 0 ? rest.substring(bar + 1) : rest
-      if (path.length > 0)
-        driveModel.append({ "devPath": path, "devLabel": root.translateDriveLabel(label) })
+      if (path.length > 0 && root.isOpticalDevice(path))
+        driveModel.append({ "devPath": path, "devLabel": root.plainText(root.translateDriveLabel(label)) })
     }
   }
 
@@ -225,7 +233,7 @@ Panel {
     if (root.settings && root.settings.tvStandard === "NTSC")
       std = "NTSC"
     root.tvStandard = std
-    if (root.settings && root.settings.selectedDevice)
+    if (root.settings && root.isOpticalDevice(root.settings.selectedDevice))
       root.selectedDevice = String(root.settings.selectedDevice)
     root.applyingSettings = false
   }
@@ -265,10 +273,11 @@ Panel {
         break
       }
     }
-    if (found)
+    if (found && root.isOpticalDevice(preferred))
       root.selectedDevice = preferred
     else
-      root.selectedDevice = driveModel.count > 0 ? driveModel.get(0).devPath : ""
+      root.selectedDevice = (driveModel.count > 0 && root.isOpticalDevice(driveModel.get(0).devPath))
+        ? driveModel.get(0).devPath : ""
   }
 
   function clearSetupBusy() {
@@ -358,10 +367,10 @@ Panel {
               "--extensions", "mp4 mkv mov avi webm m4v ts mts m2ts wmv flv"]
     stdout: SplitParser {
       onRead: function(line) {
-        var p = root.stripFileUri(line.trim())
+        var p = root.plainText(root.stripFileUri(line.trim()))
         if (p.length === 0) return
         root.inputPath = p
-        root.inputName = p.split("/").pop()
+        root.inputName = root.plainText(p.split("/").pop())
         root.outputIso = root.deriveOutputIso(p)
         root.converted = false
         root.progressPct = 0
@@ -724,7 +733,8 @@ Panel {
           Text {
             width: parent.width
             visible: root.missingPkgs.length > 0
-            text: root.t("setup.missing", root.missingPkgs.split(",").join(", "))
+            text: root.t("setup.missing", root.plainText(root.missingPkgs.split(",").join(", ")))
+            textFormat: Text.PlainText
             color: Qt.darker(root.contentForeground, 1.3)
             wrapMode: Text.Wrap
             font.family: root.contentFontFamily
@@ -858,6 +868,7 @@ Panel {
                 anchors.centerIn: parent
                 width: parent.width - Style.space(8)
                 text: model.devLabel
+                textFormat: Text.PlainText
                 elide: Text.ElideRight
                 wrapMode: Text.NoWrap
                 horizontalAlignment: Text.AlignHCenter
@@ -871,7 +882,10 @@ Panel {
                 hoverEnabled: true
                 enabled: !root.busy
                 cursorShape: Qt.PointingHandCursor
-                onClicked: root.selectedDevice = model.devPath
+                onClicked: {
+                  if (root.isOpticalDevice(model.devPath))
+                    root.selectedDevice = model.devPath
+                }
               }
             }
           }
@@ -908,6 +922,7 @@ Panel {
           width: parent.width
           visible: root.showWorkUi
           text: root.inputPath.length > 0 ? root.t("file.label", root.inputName) : root.t("file.none")
+          textFormat: Text.PlainText
           elide: Text.ElideMiddle
           wrapMode: Text.NoWrap
           color: root.contentForeground
@@ -944,6 +959,7 @@ Panel {
           width: parent.width
           visible: root.showWorkUi
           text: root.statusText + ((root.busy && root.phase !== "wait") ? (" (" + root.progressPct + "%)") : "")
+          textFormat: Text.PlainText
           color: root.contentForeground
           wrapMode: Text.WrapAnywhere
           font.family: root.contentFontFamily

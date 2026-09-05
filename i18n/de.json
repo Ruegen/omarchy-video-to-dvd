@@ -79,6 +79,10 @@
   "error.burn-failed": "Brennen fehlgeschlagen",
   "error.eject-failed": "Auswerfen fehlgeschlagen",
   "error.invalid-user": "ungültiger Benutzer",
+  "error.iso-unsafe-path": "ISO-Pfad ist keine sichere reguläre Datei",
+  "error.invalid-device": "kein geprüftes optisches Laufwerk",
+  "error.timeout": "Zeitüberschreitung",
+  "error.runtime-state": "private Laufzeitdateien konnten nicht erstellt werden",
   "drive.usb": "USB-DVD-Laufwerk",
   "drive.internal": "Internes DVD-Laufwerk"
 }

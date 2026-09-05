@@ -79,6 +79,10 @@
   "error.burn-failed": "burn failed",
   "error.eject-failed": "eject failed",
   "error.invalid-user": "invalid user",
+  "error.iso-unsafe-path": "ISO path is not a safe regular file",
+  "error.invalid-device": "not a validated optical drive",
+  "error.timeout": "operation timed out",
+  "error.runtime-state": "could not create private runtime files",
   "drive.usb": "USB DVD drive",
   "drive.internal": "Internal DVD drive"
 }
