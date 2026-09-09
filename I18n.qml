@@ -88,12 +88,17 @@ Item {
   }
 
   function jsonPath(name) {
+    if (!/^[A-Za-z]{2,8}(_[A-Za-z0-9]{1,16})?\.json$/.test(String(name)))
+      return ""
     var u = Qt.resolvedUrl("i18n/" + name)
     return u.toString().replace("file://", "")
   }
 
   function loadJson(name) {
-    jsonView.path = root.jsonPath(name)
+    var p = root.jsonPath(name)
+    if (!p)
+      return null
+    jsonView.path = p
     try {
       var txt = jsonView.text()
       if (!txt)

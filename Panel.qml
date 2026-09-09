@@ -53,16 +53,46 @@ Panel {
   property bool packagesReady: false
   property string driveStatus: "none"
   property string selectedDevice: ""
+  property string discState: "unknown"
+  property bool cursorActive: false
+  property bool keyNav: false
+  property bool burnConfirmOpen: false
+  property int cursorRow: 0
+  property int cursorCol: 0
+  property string cursorId: ""
 
   onPackagesReadyChanged: root.applySetupStatus()
+  onOpenedChanged: {
+    if (root.opened) {
+      root.probeSetup()
+      root.cursorActive = true
+      root.keyNav = false
+      root.snapCursorToDefault()
+      if (root.showWorkUi)
+        root.pollBlank()
+      Qt.callLater(function() { if (keyCatcher) keyCatcher.forceActiveFocus() })
+    }
+  }
+  onPhaseChanged: root.clampCursor()
+  onBusyChanged: root.clampCursor()
+  onShowPackageSetupChanged: root.clampCursor()
+  onShowDriveSetupChanged: root.clampCursor()
+  onShowDoneUiChanged: root.clampCursor()
+  onCanMakeDvdChanged: root.clampCursor()
+  onShowDiscSpinChanged: root.clampCursor()
 
   readonly property int driveCount: driveModel.count
   readonly property bool showPackageSetup: root.setupProbed && !root.packagesReady
   readonly property bool showDriveSetup: root.setupProbed && root.packagesReady && root.driveStatus === "need-permission"
   readonly property bool showMainActions: root.packagesReady && !root.showDriveSetup
   readonly property bool showDoneUi: root.phase === "done"
+  readonly property bool waitingToBurn: root.phase === "wait"
   readonly property bool showWorkUi: root.showMainActions && !root.showDoneUi
+  readonly property bool discIsBlank: root.discState === "yes"
   readonly property bool canMakeDvd: !root.busy && root.showWorkUi && root.inputPath.length > 0
+  readonly property bool showDiscSpin: root.busy && root.phase === "burn"
+  property color themeGreen: "#9ece6a"
+  readonly property color discColor: root.themeGreen
 
   readonly property color contentForeground: bar ? bar.foreground : Color.foreground
   readonly property string contentFontFamily: bar ? bar.fontFamily : Style.font.family
@@ -80,7 +110,10 @@ Panel {
   }
 
   function plainText(s) {
-    return String(s == null ? "" : s).replace(/[\u0000-\u001f\u007f]/g, "")
+    return String(s == null ? "" : s)
+      .replace(/[&<>]/g, "")
+      .replace(/[\u0000-\u001f\u007f\u0080-\u009f]/g, "")
+      .substring(0, 240)
   }
 
   function isOpticalDevice(path) {
@@ -92,7 +125,7 @@ Panel {
   }
 
   function notify(title, body, sound) {
-    var args = [root.helperPath, "notify", title, body || ""]
+    var args = [root.helperPath, "notify", root.plainText(title), root.plainText(body || "")]
     if (sound)
       args.push(sound)
     notifyProc.exec(args)
@@ -102,6 +135,7 @@ Panel {
     root.busy = false
     root.phase = "idle"
     root.jobPgid = 0
+    root.burnConfirmOpen = false
     if (status !== undefined)
       root.statusText = status
   }
@@ -259,7 +293,12 @@ Panel {
   onSettingsChanged: root.applySettingsFromHost()
   onHostWidgetChanged: root.applySettingsFromHost()
   onTvStandardChanged: root.persistChoices()
-  onSelectedDeviceChanged: root.persistChoices()
+  onSelectedDeviceChanged: {
+    root.persistChoices()
+    root.discState = "unknown"
+    if (root.opened && root.showWorkUi)
+      root.pollBlank()
+  }
 
   function finalizeDrives() {
     var preferred = root.selectedDevice
@@ -313,6 +352,16 @@ Panel {
     root.statusText = root.inputPath ? root.t("status.ready") : root.t("status.idle")
   }
 
+  function discStatusText() {
+    if (root.discState === "yes")
+      return root.t("status.ready")
+    if (root.discState === "too_small")
+      return root.t("status.discTooSmall")
+    if (root.discState === "no")
+      return root.t("status.discNotBlank")
+    return root.t("status.insertBlank")
+  }
+
   function probeSetup(force) {
     if (root.setupBusy && !force) return
     if (checkSetupProc.running) {
@@ -344,11 +393,6 @@ Panel {
     setupProc.running = true
   }
 
-  onOpenedChanged: {
-    if (root.opened)
-      root.probeSetup()
-  }
-
   Component.onCompleted: root.probeSetup()
 
   function stripFileUri(p) {
@@ -374,6 +418,7 @@ Panel {
         root.outputIso = root.deriveOutputIso(p)
         root.converted = false
         root.progressPct = 0
+        root.discState = "unknown"
         root.statusText = root.driveCount === 0 ? root.t("status.noDrive") : root.t("status.ready")
       }
     }
@@ -381,6 +426,9 @@ Panel {
       // Exit 1 = nothing picked (not an error).
       if (code > 1 && !root.busy)
         root.statusText = root.t("status.pickerFailed")
+      if (root.canMakeDvd)
+        root.setCursorTo("make")
+      Qt.callLater(function() { if (keyCatcher) keyCatcher.forceActiveFocus() })
     }
   }
   function pickFile() {
@@ -392,6 +440,7 @@ Panel {
 
   Process { id: notifyProc }
   Process { id: killerProc }
+
 
   Process {
     id: checkSetupProc
@@ -476,13 +525,20 @@ Panel {
   }
 
   function pollBlank() {
-    if (root.phase !== "wait" || root.userCancelled)
+    if (root.showDiscSpin || (root.phase === "wait" && root.userCancelled))
+      return
+    if (root.phase !== "wait" && root.phase !== "idle")
       return
     if (blankProc.running)
       blankProc.running = false
     Qt.callLater(function() {
-      if (root.phase === "wait" && !root.userCancelled)
-        blankProc.running = true
+      if (root.showDiscSpin)
+        return
+      if (root.phase !== "wait" && root.phase !== "idle")
+        return
+      if (root.phase === "wait" && root.userCancelled)
+        return
+      blankProc.running = true
     })
   }
 
@@ -523,6 +579,15 @@ Panel {
     }
   }
 
+  Timer {
+    id: discPollTimer
+    interval: 2500
+    repeat: true
+    running: root.opened && root.showWorkUi && !root.showDiscSpin
+             && (root.phase === "idle" || root.phase === "wait")
+    onTriggered: root.pollBlank()
+  }
+
   Process {
     id: blankProc
     command: root.outputIso.length > 0 && root.selectedDevice.length > 0
@@ -533,7 +598,17 @@ Panel {
     stdout: SplitParser {
       onRead: function(line) {
         var tline = line.trim()
-        if (root.phase !== "wait" || root.userCancelled) return
+        if (tline === "BLANK:YES")
+          root.discState = "yes"
+        else if (tline === "BLANK:TOO_SMALL")
+          root.discState = "too_small"
+        else if (tline === "BLANK:NO")
+          root.discState = "no"
+        else
+          root.discState = "none"
+
+        if (root.phase !== "wait" || root.userCancelled)
+          return
         if (tline === "BLANK:YES") {
           root.startBurn()
         } else if (tline === "BLANK:TOO_SMALL") {
@@ -652,6 +727,12 @@ Panel {
 
   function cancelAll() {
     if (!root.busy) return
+    if (root.phase === "burn" && !root.burnConfirmOpen) {
+      burnConfirm.selectedIndex = 0
+      root.burnConfirmOpen = true
+      return
+    }
+    root.burnConfirmOpen = false
     root.userCancelled = true
     waitTimer.stop()
 
@@ -664,8 +745,8 @@ Panel {
     if (!pgid && pid)
       pgid = pid
 
-    if (pgid)
-      killerProc.exec(["bash", "-c", "kill -- -" + pgid + " 2>/dev/null || kill " + pgid + " 2>/dev/null || true"])
+    if (pgid > 0)
+      killerProc.exec(["/usr/bin/kill", "--", "-" + String(pgid)])
 
     if (convertProc.running) {
       convertProc.signal(15)
@@ -685,6 +766,202 @@ Panel {
     root.notify(root.t("notify.cancelled.title"), root.t("notify.cancelled.body"))
   }
 
+  function actionRows() {
+    var rows = []
+    if (root.showPackageSetup && !root.setupBusy)
+      rows.push(["install"])
+    if (root.showDriveSetup && !root.setupBusy)
+      rows.push(["optical"])
+    if (root.showWorkUi && !root.busy)
+      rows.push(["pal", "ntsc"])
+    if (root.showWorkUi && root.driveCount >= 2 && !root.showDiscSpin && !root.busy) {
+      var drives = []
+      for (var i = 0; i < root.driveCount; i++)
+        drives.push("drive:" + i)
+      rows.push(drives)
+    }
+    if (root.showWorkUi && !root.showDiscSpin && !root.busy)
+      rows.push(["select"])
+    var work = []
+    if (root.showWorkUi && !root.showDiscSpin && (root.phase === "wait" || root.canMakeDvd))
+      work.push("make")
+    if (root.showWorkUi && root.busy)
+      work.push("cancel")
+    if (work.length)
+      rows.push(work)
+    if (root.showDoneUi)
+      rows.push(["again"])
+    return rows
+  }
+
+  function currentAction() {
+    var rows = root.actionRows()
+    if (!rows.length)
+      return ""
+    var r = Math.max(0, Math.min(root.cursorRow, rows.length - 1))
+    var row = rows[r]
+    var c = Math.max(0, Math.min(root.cursorCol, row.length - 1))
+    return row[c]
+  }
+
+  function actionHot(id) {
+    return root.cursorActive && root.currentAction() === id
+  }
+
+  function setCursorTo(id) {
+    var rows = root.actionRows()
+    for (var r = 0; r < rows.length; r++) {
+      for (var c = 0; c < rows[r].length; c++) {
+        if (rows[r][c] === id) {
+          root.cursorActive = true
+          root.cursorRow = r
+          root.cursorCol = c
+          root.cursorId = id
+          return true
+        }
+      }
+    }
+    return false
+  }
+
+  function snapCursorToDefault() {
+    var prefer = []
+    if (root.showDoneUi)
+      prefer.push("again")
+    if (root.showDiscSpin)
+      prefer.push("cancel")
+    if (root.phase === "wait")
+      prefer.push("make")
+    if (root.canMakeDvd)
+      prefer.push("make")
+    if (root.showWorkUi && !root.busy)
+      prefer.push("select")
+    if (root.showPackageSetup)
+      prefer.push("install")
+    if (root.showDriveSetup)
+      prefer.push("optical")
+    if (root.busy)
+      prefer.push("cancel")
+    for (var i = 0; i < prefer.length; i++) {
+      if (root.setCursorTo(prefer[i]))
+        return
+    }
+    var rows = root.actionRows()
+    if (!rows.length) {
+      root.cursorId = ""
+      return
+    }
+    root.cursorRow = 0
+    root.cursorCol = 0
+    root.cursorId = rows[0][0]
+    root.cursorActive = true
+  }
+
+  function clampCursor() {
+    if (root.setCursorTo(root.cursorId))
+      return
+    root.snapCursorToDefault()
+  }
+
+  function moveCursor(dx, dy) {
+    root.cursorActive = true
+    root.keyNav = true
+    var rows = root.actionRows()
+    if (!rows.length)
+      return
+    if (root.cursorRow >= rows.length)
+      root.cursorRow = rows.length - 1
+    if (dy !== 0) {
+      root.cursorRow = Math.max(0, Math.min(rows.length - 1, root.cursorRow + dy))
+      root.cursorCol = Math.max(0, Math.min(rows[root.cursorRow].length - 1, root.cursorCol))
+    } else if (dx !== 0) {
+      root.cursorCol = Math.max(0, Math.min(rows[root.cursorRow].length - 1, root.cursorCol + dx))
+    }
+    root.cursorId = rows[root.cursorRow][root.cursorCol]
+  }
+
+  function activateCursor() {
+    root.cursorActive = true
+    var id = root.currentAction()
+    if (id === "install")
+      root.installPackages()
+    else if (id === "optical")
+      root.allowDvdBurning()
+    else if (id === "pal")
+      root.tvStandard = "PAL"
+    else if (id === "ntsc")
+      root.tvStandard = "NTSC"
+    else if (id.indexOf("drive:") === 0) {
+      var n = parseInt(id.substring(6), 10)
+      if (!isNaN(n) && n >= 0 && n < driveModel.count) {
+        var path = driveModel.get(n).devPath
+        if (root.isOpticalDevice(path))
+          root.selectedDevice = path
+      }
+    } else if (id === "select")
+      root.pickFile()
+    else if (id === "make") {
+      if (root.phase === "wait")
+        root.tryBurnNow()
+      else
+        root.startOneShot()
+    } else if (id === "cancel")
+      root.cancelAll()
+    else if (id === "again")
+      root.makeAnother()
+  }
+
+  component ActionBtn: Rectangle {
+    property string label: ""
+    property string actionId: ""
+    property bool on: true
+    property bool chosen: false
+    property real fontPx: Style.font.body
+    signal activated()
+
+    height: visible ? Style.space(32) : 0
+    radius: Style.cornerRadius
+    opacity: on ? 1.0 : 0.4
+    readonly property bool hot: mouse.containsMouse || (root.keyNav && root.actionHot(actionId))
+    color: hot
+      ? Style.hoverFillFor(root.contentForeground, Color.accent)
+      : (chosen
+        ? Style.selectedFillFor(root.contentForeground, Color.accent)
+        : Style.normalFillFor(root.contentForeground, Color.accent))
+    border.width: Style.controlBorderWidth(false, hot)
+    border.color: hot
+      ? Style.hoverBorderFor(root.contentForeground, Color.accent)
+      : Style.normalBorderFor(root.contentForeground, Color.accent)
+
+    Text {
+      anchors.centerIn: parent
+      width: parent.width - Style.space(8)
+      text: label
+      textFormat: Text.PlainText
+      elide: Text.ElideRight
+      wrapMode: Text.NoWrap
+      horizontalAlignment: Text.AlignHCenter
+      color: root.contentForeground
+      font.family: root.contentFontFamily
+      font.pixelSize: fontPx
+    }
+
+    MouseArea {
+      id: mouse
+      anchors.fill: parent
+      hoverEnabled: true
+      enabled: on
+      cursorShape: Qt.PointingHandCursor
+      onContainsMouseChanged: {
+        if (containsMouse) {
+          root.keyNav = false
+          root.setCursorTo(actionId)
+        }
+      }
+      onClicked: parent.activated()
+    }
+  }
+
   KeyboardPanel {
     id: panel
     anchorItem: root.anchorItem
@@ -698,8 +975,51 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
-      onCloseRequested: root.close()
+      onMoveRequested: function(dx, dy) {
+        if (root.burnConfirmOpen) {
+          burnConfirm.selectedIndex = burnConfirm.selectedIndex === 0 ? 1 : 0
+          return
+        }
+        root.moveCursor(dx, dy)
+      }
+      onActivateRequested: {
+        if (root.burnConfirmOpen) {
+          if (burnConfirm.selectedIndex === 0)
+            root.burnConfirmOpen = false
+          else
+            root.cancelAll()
+          return
+        }
+        root.activateCursor()
+      }
+      onCloseRequested: {
+        if (root.burnConfirmOpen) {
+          root.burnConfirmOpen = false
+          return
+        }
+        root.close()
+      }
       onTabRequested: function(direction) { root.switchPanel(direction) }
+
+      ConfirmDialog {
+        id: burnConfirm
+        anchors.fill: parent
+        z: 20
+        opened: root.burnConfirmOpen
+        selectedIndex: 0
+        message: root.t("confirm.burnCancel.message")
+        cancelText: root.t("confirm.burnCancel.keep")
+        confirmText: root.t("confirm.burnCancel.stop")
+        background: Color.popups.background
+        foreground: root.contentForeground
+        scrim: Util.alpha(Color.popups.background, 0.72)
+        selectedBackground: Util.alpha(root.contentForeground, 0.08)
+        selectedText: Color.accent
+        fontFamily: root.contentFontFamily
+        cornerRadius: Style.cornerRadius
+        onCanceled: root.burnConfirmOpen = false
+        onConfirmed: root.cancelAll()
+      }
 
       Column {
         id: contentColumn
@@ -707,6 +1027,7 @@ Panel {
         spacing: Style.space(12)
 
         Text {
+          textFormat: Text.PlainText
           width: parent.width
           text: root.t("app.header")
           color: Qt.darker(root.contentForeground, 1.5)
@@ -722,6 +1043,7 @@ Panel {
           visible: root.showPackageSetup
 
           Text {
+            textFormat: Text.PlainText
             width: parent.width
             text: root.t("setup.needsPackages")
             color: root.contentForeground
@@ -741,29 +1063,12 @@ Panel {
             font.pixelSize: Style.font.caption
           }
 
-          Rectangle {
+          ActionBtn {
             width: parent.width
-            height: Style.space(32)
-            radius: Style.cornerRadius
-            opacity: root.setupBusy ? 0.4 : 1.0
-            color: installMouse.containsMouse && !root.setupBusy
-              ? Style.hoverFillFor(root.contentForeground, Color.accent)
-              : Qt.rgba(root.contentForeground.r, root.contentForeground.g, root.contentForeground.b, 0.08)
-            Text {
-              anchors.centerIn: parent
-              text: root.t("action.installPackages")
-              color: root.contentForeground
-              font.family: root.contentFontFamily
-              font.pixelSize: Style.font.body
-            }
-            MouseArea {
-              id: installMouse
-              anchors.fill: parent
-              hoverEnabled: true
-              enabled: !root.setupBusy
-              cursorShape: Qt.PointingHandCursor
-              onClicked: root.installPackages()
-            }
+            label: root.t("action.installPackages")
+            actionId: "install"
+            on: !root.setupBusy
+            onActivated: root.installPackages()
           }
         }
 
@@ -773,6 +1078,7 @@ Panel {
           visible: root.showDriveSetup
 
           Text {
+            textFormat: Text.PlainText
             width: parent.width
             text: root.t("setup.needsDrivePermission")
             color: root.contentForeground
@@ -781,29 +1087,12 @@ Panel {
             font.pixelSize: Style.font.body
           }
 
-          Rectangle {
+          ActionBtn {
             width: parent.width
-            height: Style.space(32)
-            radius: Style.cornerRadius
-            opacity: root.setupBusy ? 0.4 : 1.0
-            color: driveMouse.containsMouse && !root.setupBusy
-              ? Style.hoverFillFor(root.contentForeground, Color.accent)
-              : Qt.rgba(root.contentForeground.r, root.contentForeground.g, root.contentForeground.b, 0.08)
-            Text {
-              anchors.centerIn: parent
-              text: root.t("action.allowDvdBurning")
-              color: root.contentForeground
-              font.family: root.contentFontFamily
-              font.pixelSize: Style.font.body
-            }
-            MouseArea {
-              id: driveMouse
-              anchors.fill: parent
-              hoverEnabled: true
-              enabled: !root.setupBusy
-              cursorShape: Qt.PointingHandCursor
-              onClicked: root.allowDvdBurning()
-            }
+            label: root.t("action.allowDvdBurning")
+            actionId: "optical"
+            on: !root.setupBusy
+            onActivated: root.allowDvdBurning()
           }
         }
 
@@ -818,27 +1107,13 @@ Panel {
               { labelKey: "tv.pal", std: "PAL" },
               { labelKey: "tv.ntsc", std: "NTSC" }
             ]
-            Rectangle {
+            ActionBtn {
               width: (tvStandardRow.width - tvStandardRow.spacing) / 2
-              height: Style.space(32)
-              radius: Style.cornerRadius
-              color: root.tvStandard === modelData.std
-                ? Qt.rgba(root.contentForeground.r, root.contentForeground.g, root.contentForeground.b, 0.18)
-                : (tvMouse.containsMouse ? Style.hoverFillFor(root.contentForeground, Color.accent) : Qt.rgba(root.contentForeground.r, root.contentForeground.g, root.contentForeground.b, 0.08))
-              Text {
-                anchors.centerIn: parent
-                text: root.t(modelData.labelKey)
-                color: root.contentForeground
-                font.family: root.contentFontFamily
-                font.pixelSize: Style.font.caption
-              }
-              MouseArea {
-                id: tvMouse
-                anchors.fill: parent
-                hoverEnabled: true
-                cursorShape: Qt.PointingHandCursor
-                onClicked: root.tvStandard = modelData.std
-              }
+              label: root.t(modelData.labelKey)
+              actionId: modelData.std === "PAL" ? "pal" : "ntsc"
+              chosen: root.tvStandard === modelData.std
+              fontPx: Style.font.caption
+              onActivated: root.tvStandard = modelData.std
             }
           }
         }
@@ -847,96 +1122,98 @@ Panel {
           id: driveRow
           width: parent.width
           spacing: Style.space(8)
-          visible: root.showWorkUi && root.driveCount >= 2
+          visible: root.showWorkUi && root.driveCount >= 2 && !root.showDiscSpin
 
           Repeater {
             model: driveModel
-            Rectangle {
+            ActionBtn {
               width: (driveRow.width - driveRow.spacing * Math.max(driveModel.count - 1, 0)) / Math.max(driveModel.count, 1)
-              height: Style.space(32)
-              radius: Style.cornerRadius
-              opacity: root.busy ? 0.4 : 1.0
-              color: {
-                var selected = root.selectedDevice === model.devPath
-                if (selected)
-                  return Qt.rgba(root.contentForeground.r, root.contentForeground.g, root.contentForeground.b, 0.18)
-                if (drivePickMouse.containsMouse && !root.busy)
-                  return Style.hoverFillFor(root.contentForeground, Color.accent)
-                return Qt.rgba(root.contentForeground.r, root.contentForeground.g, root.contentForeground.b, 0.08)
-              }
-              Text {
-                anchors.centerIn: parent
-                width: parent.width - Style.space(8)
-                text: model.devLabel
-                textFormat: Text.PlainText
-                elide: Text.ElideRight
-                wrapMode: Text.NoWrap
-                horizontalAlignment: Text.AlignHCenter
-                color: root.contentForeground
-                font.family: root.contentFontFamily
-                font.pixelSize: Style.font.body
-              }
-              MouseArea {
-                id: drivePickMouse
-                anchors.fill: parent
-                hoverEnabled: true
-                enabled: !root.busy
-                cursorShape: Qt.PointingHandCursor
-                onClicked: {
-                  if (root.isOpticalDevice(model.devPath))
-                    root.selectedDevice = model.devPath
-                }
+              label: model.devLabel
+              actionId: "drive:" + index
+              on: !root.busy
+              chosen: root.selectedDevice === model.devPath
+              onActivated: {
+                if (root.isOpticalDevice(model.devPath))
+                  root.selectedDevice = model.devPath
               }
             }
           }
         }
 
-        Rectangle {
+        ActionBtn {
           width: parent.width
-          height: Style.space(32)
-          radius: Style.cornerRadius
-          visible: root.showWorkUi
-          opacity: root.busy ? 0.4 : 1.0
-          color: selectMouse.containsMouse && !root.busy
-            ? Style.hoverFillFor(root.contentForeground, Color.accent)
-            : Qt.rgba(root.contentForeground.r, root.contentForeground.g, root.contentForeground.b, 0.08)
+          visible: root.showWorkUi && !root.busy
+          label: root.t("action.selectVideo")
+          actionId: "select"
+          on: !root.busy
+          onActivated: root.pickFile()
+        }
+
+        Item {
+          id: discStage
+          width: parent.width
+          height: discIcon.height + Style.space(10)
+          visible: root.showDiscSpin
+
           Text {
-            anchors.centerIn: parent
-            text: root.t("action.selectVideo")
-            color: root.contentForeground
-            font.family: root.contentFontFamily
-            font.pixelSize: Style.font.body
-          }
-          MouseArea {
-            id: selectMouse
-            anchors.fill: parent
-            hoverEnabled: true
-            enabled: !root.busy
-            cursorShape: Qt.PointingHandCursor
-            onClicked: root.pickFile()
+            id: discIcon
+            anchors.horizontalCenter: parent.horizontalCenter
+            anchors.top: parent.top
+            text: "\uf51f"
+            textFormat: Text.PlainText
+            color: root.discColor
+            font.family: "Font Awesome 7 Free Solid"
+            font.pixelSize: Style.space(84)
+            horizontalAlignment: Text.AlignHCenter
+
+            Timer {
+              interval: 32
+              running: discStage.visible
+              repeat: true
+              onTriggered: discIcon.rotation = (discIcon.rotation + 1.6) % 360
+            }
           }
         }
 
-        Text {
-          id: fileLabel
+        Column {
           width: parent.width
-          visible: root.showWorkUi
-          text: root.inputPath.length > 0 ? root.t("file.label", root.inputName) : root.t("file.none")
-          textFormat: Text.PlainText
-          elide: Text.ElideMiddle
-          wrapMode: Text.NoWrap
-          color: root.contentForeground
-          font.family: root.contentFontFamily
-          font.pixelSize: Style.font.body
-          MouseArea {
-            id: fileHover
-            anchors.fill: parent
-            hoverEnabled: true
-            acceptedButtons: Qt.NoButton
+          spacing: Style.space(4)
+          visible: root.showWorkUi && !root.showDiscSpin
+
+          Text {
+            width: parent.width
+            visible: root.waitingToBurn
+            text: root.t("wait.ready")
+            textFormat: Text.PlainText
+            color: root.contentForeground
+            font.family: root.contentFontFamily
+            font.pixelSize: Style.font.body
+            font.bold: true
           }
-          PanelToolTip {
-            visible: fileHover.containsMouse && root.inputPath.length > 0
-            text: root.inputPath
+          Text {
+            id: fileLabel
+            width: parent.width
+            text: root.waitingToBurn
+              ? root.plainText(root.inputName)
+              : (root.inputPath.length > 0 ? root.t("file.label", root.inputName) : root.t("file.none"))
+            textFormat: Text.PlainText
+            elide: Text.ElideMiddle
+            wrapMode: Text.NoWrap
+            color: root.waitingToBurn
+              ? Qt.darker(root.contentForeground, 1.3)
+              : root.contentForeground
+            font.family: root.contentFontFamily
+            font.pixelSize: Style.font.body
+            MouseArea {
+              id: fileHover
+              anchors.fill: parent
+              hoverEnabled: true
+              acceptedButtons: Qt.NoButton
+            }
+            PanelToolTip {
+              visible: fileHover.containsMouse && root.inputPath.length > 0
+              text: root.plainText(root.inputPath)
+            }
           }
         }
 
@@ -945,12 +1222,12 @@ Panel {
           height: Style.space(6)
           radius: Style.cornerRadius > 0 ? height / 2 : 0
           color: Qt.rgba(root.contentForeground.r, root.contentForeground.g, root.contentForeground.b, 0.12)
-          visible: root.showWorkUi && (root.busy || root.converted)
+          visible: root.showWorkUi && root.busy && root.phase !== "wait"
           Rectangle {
             width: Math.round(parent.width * (root.progressPct / 100))
             height: parent.height
             radius: parent.radius
-            color: Style.selectedStateColor(root.contentForeground, Color.accent)
+            color: root.showDiscSpin ? root.discColor : Style.selectedStateColor(root.contentForeground, Color.accent)
             Behavior on width { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
           }
         }
@@ -972,6 +1249,7 @@ Panel {
           visible: root.showDoneUi
 
           Text {
+            textFormat: Text.PlainText
             width: parent.width
             text: root.t("done.title")
             color: root.contentForeground
@@ -981,6 +1259,7 @@ Panel {
             font.bold: true
           }
           Text {
+            textFormat: Text.PlainText
             width: parent.width
             text: root.t("done.body")
             color: Qt.darker(root.contentForeground, 1.25)
@@ -988,92 +1267,44 @@ Panel {
             font.family: root.contentFontFamily
             font.pixelSize: Style.font.body
           }
-          Rectangle {
+          ActionBtn {
             width: parent.width
-            height: Style.space(32)
-            radius: Style.cornerRadius
-            color: againMouse.containsMouse
-              ? Style.hoverFillFor(root.contentForeground, Color.accent)
-              : Qt.rgba(root.contentForeground.r, root.contentForeground.g, root.contentForeground.b, 0.08)
-            Text {
-              anchors.centerIn: parent
-              text: root.t("action.makeAnother")
-              color: root.contentForeground
-              font.family: root.contentFontFamily
-              font.pixelSize: Style.font.body
-            }
-            MouseArea {
-              id: againMouse
-              anchors.fill: parent
-              hoverEnabled: true
-              cursorShape: Qt.PointingHandCursor
-              onClicked: root.makeAnother()
-            }
+            label: root.t("action.makeAnother")
+            actionId: "again"
+            onActivated: root.makeAnother()
           }
         }
 
         Row {
           width: parent.width
-          spacing: Style.space(8)
+          spacing: root.showDiscSpin ? 0 : Style.space(8)
           visible: root.showWorkUi
 
-          Rectangle {
-            width: (parent.width - Style.space(8)) / 2
-            height: Style.space(32)
-            radius: Style.cornerRadius
-            opacity: (root.phase === "wait" || root.canMakeDvd) ? 1.0 : 0.4
-            color: makeMouse.containsMouse && (root.phase === "wait" || root.canMakeDvd)
-              ? Style.hoverFillFor(root.contentForeground, Color.accent)
-              : Qt.rgba(root.contentForeground.r, root.contentForeground.g, root.contentForeground.b, 0.08)
-            Text {
-              anchors.centerIn: parent
-              text: root.phase === "wait" ? root.t("action.burnNow") : root.t("action.makeDvd")
-              color: root.contentForeground
-              font.family: root.contentFontFamily
-              font.pixelSize: Style.font.body
-            }
-            MouseArea {
-              id: makeMouse
-              anchors.fill: parent
-              hoverEnabled: true
-              enabled: root.phase === "wait" || root.canMakeDvd
-              cursorShape: Qt.PointingHandCursor
-              onClicked: {
-                if (root.phase === "wait")
-                  root.tryBurnNow()
-                else
-                  root.startOneShot()
-              }
+          ActionBtn {
+            visible: !root.showDiscSpin
+            width: visible ? (parent.width - Style.space(8)) / 2 : 0
+            label: root.phase === "wait" ? root.t("action.burnNow") : root.t("action.makeDvd")
+            actionId: "make"
+            on: root.phase === "wait" || root.canMakeDvd
+            onActivated: {
+              if (root.phase === "wait")
+                root.tryBurnNow()
+              else
+                root.startOneShot()
             }
           }
 
-          Rectangle {
-            width: (parent.width - Style.space(8)) / 2
-            height: Style.space(32)
-            radius: Style.cornerRadius
-            opacity: root.busy ? 1.0 : 0.4
-            color: cancelMouse.containsMouse && root.busy
-              ? Style.hoverFillFor(root.contentForeground, Color.accent)
-              : Qt.rgba(root.contentForeground.r, root.contentForeground.g, root.contentForeground.b, 0.08)
-            Text {
-              anchors.centerIn: parent
-              text: root.t("action.cancel")
-              color: root.contentForeground
-              font.family: root.contentFontFamily
-              font.pixelSize: Style.font.body
-            }
-            MouseArea {
-              id: cancelMouse
-              anchors.fill: parent
-              hoverEnabled: true
-              enabled: root.busy
-              cursorShape: Qt.PointingHandCursor
-              onClicked: root.cancelAll()
-            }
+          ActionBtn {
+            width: root.showDiscSpin ? parent.width : (parent.width - Style.space(8)) / 2
+            label: root.t("action.cancel")
+            actionId: "cancel"
+            on: root.busy
+            onActivated: root.cancelAll()
           }
         }
 
         Text {
+          textFormat: Text.PlainText
           width: parent.width
           visible: root.showWorkUi
           text: root.t("legal")
