@@ -873,9 +873,18 @@ Panel {
       root.cursorRow = rows.length - 1
     if (dy !== 0) {
       root.cursorRow = Math.max(0, Math.min(rows.length - 1, root.cursorRow + dy))
-      root.cursorCol = Math.max(0, Math.min(rows[root.cursorRow].length - 1, root.cursorCol))
+      var row = rows[root.cursorRow]
+      if (row.indexOf("pal") >= 0 && row.indexOf("ntsc") >= 0)
+        root.cursorCol = root.tvStandard === "NTSC" ? row.indexOf("ntsc") : row.indexOf("pal")
+      else
+        root.cursorCol = Math.max(0, Math.min(row.length - 1, root.cursorCol))
     } else if (dx !== 0) {
       root.cursorCol = Math.max(0, Math.min(rows[root.cursorRow].length - 1, root.cursorCol + dx))
+      var id = rows[root.cursorRow][root.cursorCol]
+      if (id === "pal")
+        root.tvStandard = "PAL"
+      else if (id === "ntsc")
+        root.tvStandard = "NTSC"
     }
     root.cursorId = rows[root.cursorRow][root.cursorCol]
   }
@@ -923,7 +932,20 @@ Panel {
     radius: Math.min(Style.cornerRadius, Style.space(4))
     clip: true
     color: Style.normalFillFor(root.contentForeground, Color.accent)
-    borderSpec: Border.controlSpec(segHover >= 0 ? "hover-cursor" : "normal", root.contentForeground, Color.accent)
+    readonly property bool groupHot: {
+      var _k = root.keyNav
+      var _c = root.cursorId
+      if (segHover >= 0)
+        return true
+      if (!root.keyNav)
+        return false
+      for (var i = 0; i < options.length; i++) {
+        if (root.actionHot(optionAction(options[i])))
+          return true
+      }
+      return false
+    }
+    borderSpec: Border.controlSpec(groupHot ? "hover-cursor" : "normal", root.contentForeground, Color.accent)
 
     property int segHover: -1
 
@@ -964,8 +986,10 @@ Panel {
           Rectangle {
             anchors.fill: parent
             color: chosen
-              ? Style.selectedFillFor(root.contentForeground, Color.accent)
-              : (hot ? Style.hoverFillFor(root.contentForeground, Color.accent) : "transparent")
+              ? Util.alpha(Color.accent, Style.selectedFillAlpha)
+              : (mouse.containsMouse && !chosen
+                ? Style.hoverFillFor(root.contentForeground, Color.accent)
+                : "transparent")
           }
 
           Text {
@@ -976,9 +1000,9 @@ Panel {
             elide: Text.ElideRight
             wrapMode: Text.NoWrap
             horizontalAlignment: Text.AlignHCenter
-            color: root.contentForeground
+            color: chosen ? Color.accent : Qt.darker(root.contentForeground, 1.45)
             font.family: root.contentFontFamily
-            font.pixelSize: seg.fontPx
+            font.pixelSize: Style.font.body
             font.bold: chosen
           }
 
@@ -1172,16 +1196,31 @@ Panel {
           }
         }
 
-        SegmentedChoice {
-          id: tvStandardRow
+        Column {
           width: parent.width
+          spacing: Style.space(4)
           visible: !root.busy && root.showWorkUi
-          options: [
-            { value: "PAL", label: root.t("tv.pal"), actionId: "pal" },
-            { value: "NTSC", label: root.t("tv.ntsc"), actionId: "ntsc" }
-          ]
-          value: root.tvStandard
-          onChanged: function(v) { root.tvStandard = v }
+
+          SegmentedChoice {
+            id: tvStandardRow
+            width: parent.width
+            options: [
+              { value: "PAL", label: root.t("tv.palShort"), actionId: "pal" },
+              { value: "NTSC", label: root.t("tv.ntscShort"), actionId: "ntsc" }
+            ]
+            value: root.tvStandard
+            onChanged: function(v) { root.tvStandard = v }
+          }
+
+          Text {
+            width: parent.width
+            text: root.tvStandard === "NTSC" ? root.t("tv.ntsc") : root.t("tv.pal")
+            textFormat: Text.PlainText
+            horizontalAlignment: Text.AlignHCenter
+            color: Qt.darker(root.contentForeground, 1.35)
+            font.family: root.contentFontFamily
+            font.pixelSize: Style.font.caption
+          }
         }
 
         Row {

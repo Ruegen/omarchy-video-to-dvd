@@ -8,6 +8,8 @@
   "wait.ready": "Bereit zum Brennen",
   "tv.pal": "PAL (576i 25 fps)",
   "tv.ntsc": "NTSC (480i 29,97 fps)",
+  "tv.palShort": "PAL",
+  "tv.ntscShort": "NTSC",
   "legal": "Konvertiere und brenne nur Inhalte, die du kopieren darfst.",
   "action.selectVideo": "Video auswählen",
   "action.makeDvd": "DVD erstellen",

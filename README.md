@@ -6,7 +6,7 @@ Omarchy bar widget: pick a video → PAL or NTSC DVD-Video ISO → wait for a bl
 
 Uses AMD AMF hardware encoding (`mpeg2_amf`) when available. The bar icon is a monochrome disc glyph, so it follows the current theme.
 
-![Preview](preview-44c773406bc1.png)
+![Preview](preview-2a2bf7f365cf.png)
 
 ## Install
 
