@@ -1,9 +1,10 @@
+use std::fs;
 use std::process::{Command, Stdio};
 
 use crate::protocol::{emit, fail};
 use crate::security::{
-    drive_is_writable, emit_drives, first_dvd_dev, have_cmd, in_optical_group, list_optical_drives,
-    pacman_has, whoami,
+    drive_is_writable, emit_drives, first_dvd_dev, have_cmd, in_optical_group,
+    install_regular_file, list_optical_drives, pacman_has, whoami,
 };
 
 pub fn play_event_sound(id: &str) {
@@ -162,4 +163,25 @@ pub fn add_optical() -> i32 {
     ));
     emit("SETUP:DONE");
     0
+}
+
+pub fn install_helper() -> i32 {
+    let src = match std::env::current_exe()
+        .ok()
+        .and_then(|p| fs::canonicalize(p).ok())
+    {
+        Some(p) => p,
+        None => return fail("runtime-state"),
+    };
+    let dest = match std::env::current_dir() {
+        Ok(dir) => dir.join("oma-dvd"),
+        Err(_) => return fail("runtime-state"),
+    };
+    match install_regular_file(&src, &dest) {
+        Ok(()) => {
+            emit("SETUP:OK:helper");
+            0
+        }
+        Err(_) => fail("runtime-state"),
+    }
 }

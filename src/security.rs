@@ -9,9 +9,9 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use libc::{O_NOFOLLOW, S_IFBLK, S_IFMT};
+use libc::{O_NOFOLLOW, O_NONBLOCK, S_IFBLK, S_IFMT};
 
-use crate::protocol::{emit, printable};
+use crate::protocol::{emit, fail, printable};
 
 pub const MAX_LOG_BYTES: u64 = 1_048_576;
 pub const MAX_CAPTURE_BYTES: usize = 65_536;
@@ -454,6 +454,306 @@ pub fn install_iso_output(src: &Path, dest: &Path) -> io::Result<()> {
     Ok(())
 }
 
+pub const MAX_HELPER_BYTES: u64 = 32 * 1024 * 1024;
+
+pub fn install_regular_file(src: &Path, dest: &Path) -> io::Result<()> {
+    let dest_dir = dest
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    if dest.file_name().is_none() {
+        return Err(io::Error::other("dest unsafe"));
+    }
+
+    let mut src_f = OpenOptions::new()
+        .read(true)
+        .custom_flags(O_NOFOLLOW)
+        .open(src)?;
+    let src_meta = src_f.metadata()?;
+    if src_meta.uid() != current_uid() || !src_meta.is_file() {
+        return Err(io::Error::other("src unsafe"));
+    }
+    if src_meta.len() == 0 || src_meta.len() > MAX_HELPER_BYTES {
+        return Err(io::Error::other("src size"));
+    }
+
+    if let Ok(dst_lstat) = fs::symlink_metadata(dest) {
+        if dst_lstat.is_file()
+            && !dest.is_symlink()
+            && dst_lstat.dev() == src_meta.dev()
+            && dst_lstat.ino() == src_meta.ino()
+        {
+            return Ok(());
+        }
+        if !dst_lstat.is_file() && !dst_lstat.file_type().is_symlink() {
+            return Err(io::Error::other("dest unsafe"));
+        }
+    }
+
+    let mut tmp = tempfile::Builder::new()
+        .prefix(".oma-dvd.")
+        .suffix(".tmp")
+        .tempfile_in(dest_dir)?;
+    let copied = io::copy(&mut src_f, tmp.as_file_mut())?;
+    if copied != src_meta.len() {
+        return Err(io::Error::other("short write"));
+    }
+    tmp.as_file_mut().sync_all()?;
+    let mut perms = tmp.as_file().metadata()?.permissions();
+    perms.set_mode(0o755);
+    tmp.as_file().set_permissions(perms)?;
+
+    tmp.persist(dest).map_err(|e| e.error)?;
+    if dest.is_symlink() || !dest.is_file() {
+        return Err(io::Error::other("rename followed"));
+    }
+    let installed = fs::metadata(dest)?;
+    if installed.uid() != current_uid() || installed.len() != src_meta.len() {
+        return Err(io::Error::other("dest unsafe"));
+    }
+    if let Ok(dirf) = OpenOptions::new().read(true).open(dest_dir) {
+        let _ = dirf.sync_all();
+    }
+    Ok(())
+}
+
+pub const MAX_I18N_BYTES: usize = 65_536;
+const MAX_I18N_KEYS: usize = 512;
+const MAX_I18N_STRING: usize = 1_024;
+const MAX_I18N_NAMES: usize = 8;
+
+pub fn i18n_name_ok(name: &str) -> bool {
+    let Some(stem) = name.strip_suffix(".json") else {
+        return false;
+    };
+    if stem.is_empty() || stem.contains('/') || stem.contains('\\') || stem.contains('.') {
+        return false;
+    }
+    let (lang, rest) = match stem.split_once('_') {
+        Some((l, r)) => (l, Some(r)),
+        None => (stem, None),
+    };
+    let lang_ok = (2..=8).contains(&lang.len()) && lang.chars().all(|c| c.is_ascii_alphabetic());
+    let rest_ok = match rest {
+        None => true,
+        Some(r) => (1..=16).contains(&r.len()) && r.chars().all(|c| c.is_ascii_alphanumeric()),
+    };
+    lang_ok && rest_ok
+}
+
+pub fn read_nofollow_capped(path: &Path, max_bytes: usize) -> io::Result<Vec<u8>> {
+    let mut f = OpenOptions::new()
+        .read(true)
+        .custom_flags(O_NOFOLLOW | O_NONBLOCK)
+        .open(path)?;
+    let meta = f.metadata()?;
+    if !meta.is_file() {
+        return Err(io::Error::other("not a regular file"));
+    }
+    if meta.uid() != current_uid() {
+        return Err(io::Error::other("wrong owner"));
+    }
+    if meta.nlink() != 1 {
+        return Err(io::Error::other("hard link"));
+    }
+    if meta.mode() & 0o022 != 0 {
+        return Err(io::Error::other("writable by others"));
+    }
+    if meta.len() > max_bytes as u64 {
+        return Err(io::Error::other("too large"));
+    }
+    let mut buf = Vec::new();
+    (&mut f).take(max_bytes as u64 + 1).read_to_end(&mut buf)?;
+    if buf.len() > max_bytes {
+        return Err(io::Error::other("too large"));
+    }
+    Ok(buf)
+}
+
+fn skip_ws(s: &[u8], i: &mut usize) {
+    while *i < s.len() && s[*i].is_ascii_whitespace() {
+        *i += 1;
+    }
+}
+
+fn parse_json_string(s: &str, i: &mut usize) -> io::Result<String> {
+    let b = s.as_bytes();
+    if *i >= b.len() || b[*i] != b'"' {
+        return Err(io::Error::other("json"));
+    }
+    *i += 1;
+    let mut out = String::new();
+    while *i < b.len() {
+        let c = b[*i];
+        *i += 1;
+        match c {
+            b'"' => {
+                if out.len() > MAX_I18N_STRING {
+                    return Err(io::Error::other("json"));
+                }
+                return Ok(out);
+            }
+            b'\\' => {
+                if *i >= b.len() {
+                    return Err(io::Error::other("json"));
+                }
+                let e = b[*i];
+                *i += 1;
+                match e {
+                    b'"' | b'\\' | b'/' => out.push(e as char),
+                    b'n' => out.push('\n'),
+                    b'r' => out.push('\r'),
+                    b't' => out.push('\t'),
+                    _ => return Err(io::Error::other("json")),
+                }
+            }
+            c if c < 0x20 => return Err(io::Error::other("json")),
+            c if c < 0x80 => out.push(c as char),
+            _ => {
+                *i -= 1;
+                let ch = s[*i..].chars().next().ok_or_else(|| io::Error::other("json"))?;
+                *i += ch.len_utf8();
+                out.push(ch);
+            }
+        }
+        if out.len() > MAX_I18N_STRING {
+            return Err(io::Error::other("json"));
+        }
+    }
+    Err(io::Error::other("json"))
+}
+
+pub fn parse_flat_json_object(bytes: &[u8]) -> io::Result<Vec<(String, String)>> {
+    let s = std::str::from_utf8(bytes).map_err(|_| io::Error::other("utf8"))?;
+    let b = s.as_bytes();
+    let mut i = 0;
+    skip_ws(b, &mut i);
+    if i >= b.len() || b[i] != b'{' {
+        return Err(io::Error::other("json"));
+    }
+    i += 1;
+    let mut out = Vec::new();
+    loop {
+        skip_ws(b, &mut i);
+        if i < b.len() && b[i] == b'}' {
+            i += 1;
+            skip_ws(b, &mut i);
+            if i != b.len() {
+                return Err(io::Error::other("json"));
+            }
+            return Ok(out);
+        }
+        if out.len() >= MAX_I18N_KEYS {
+            return Err(io::Error::other("too many keys"));
+        }
+        if !out.is_empty() {
+            if i >= b.len() || b[i] != b',' {
+                return Err(io::Error::other("json"));
+            }
+            i += 1;
+            skip_ws(b, &mut i);
+            if i < b.len() && b[i] == b'}' {
+                return Err(io::Error::other("json"));
+            }
+        }
+        let key = parse_json_string(s, &mut i)?;
+        if key.is_empty() || key.len() > MAX_I18N_STRING {
+            return Err(io::Error::other("json"));
+        }
+        skip_ws(b, &mut i);
+        if i >= b.len() || b[i] != b':' {
+            return Err(io::Error::other("json"));
+        }
+        i += 1;
+        skip_ws(b, &mut i);
+        let val = parse_json_string(s, &mut i)?;
+        out.push((key, val));
+    }
+}
+
+fn json_escape(s: &str) -> String {
+    let mut o = String::from("\"");
+    for c in s.chars() {
+        match c {
+            '"' => o.push_str("\\\""),
+            '\\' => o.push_str("\\\\"),
+            '\n' => o.push_str("\\n"),
+            '\r' => o.push_str("\\r"),
+            '\t' => o.push_str("\\t"),
+            c if (c as u32) < 0x20 => o.push_str(&format!("\\u{:04x}", c as u32)),
+            c => o.push(c),
+        }
+    }
+    o.push('"');
+    o
+}
+
+fn write_flat_json_object(out: &mut String, pairs: &[(String, String)]) {
+    out.push('{');
+    for (i, (k, v)) in pairs.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str(&json_escape(k));
+        out.push(':');
+        out.push_str(&json_escape(v));
+    }
+    out.push('}');
+}
+
+pub fn load_i18n_file(dir: &Path, name: &str) -> io::Result<Vec<(String, String)>> {
+    if !i18n_name_ok(name) {
+        return Err(io::Error::other("name"));
+    }
+    let path = dir.join("i18n").join(name);
+    let bytes = read_nofollow_capped(&path, MAX_I18N_BYTES)?;
+    parse_flat_json_object(&bytes)
+}
+
+fn plugin_dir() -> io::Result<PathBuf> {
+    let exe = std::env::current_exe()?;
+    let canon = fs::canonicalize(exe)?;
+    canon
+        .parent()
+        .map(|p| p.to_path_buf())
+        .ok_or_else(|| io::Error::other("plugin dir"))
+}
+
+pub fn read_i18n_cmd(names: &[String]) -> i32 {
+    if names.len() > MAX_I18N_NAMES {
+        return fail("runtime-state");
+    }
+    let dir = match plugin_dir() {
+        Ok(d) => d,
+        Err(_) => return fail("runtime-state"),
+    };
+    let fallback = match load_i18n_file(&dir, "en.json") {
+        Ok(m) => m,
+        Err(_) => return fail("runtime-state"),
+    };
+    let mut tag = "en".to_string();
+    let mut strings = fallback.clone();
+    for name in names {
+        if name == "en.json" {
+            continue;
+        }
+        if let Ok(m) = load_i18n_file(&dir, name) {
+            tag = name.trim_end_matches(".json").to_string();
+            strings = m;
+            break;
+        }
+    }
+    let mut line = String::from("I18N:{\"tag\":");
+    line.push_str(&json_escape(&tag));
+    line.push_str(",\"fallback\":");
+    write_flat_json_object(&mut line, &fallback);
+    line.push_str(",\"strings\":");
+    write_flat_json_object(&mut line, &strings);
+    line.push('}');
+    emit(&line);
+    0
+}
+
 pub fn safe_unlink_iso(path: &Path, expected: Option<&str>) -> io::Result<()> {
     if path.is_symlink() || !path.is_file() {
         return Err(io::Error::other("not a regular file"));
@@ -823,5 +1123,73 @@ mod tests {
             libc::mkfifo(c.as_ptr(), 0o600);
         }
         assert!(safe_create_file(&fifo).is_err());
+    }
+
+    #[test]
+    fn helper_install_replaces_symlink_not_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let victim = dir.path().join("victim");
+        fs::write(&victim, b"secret").unwrap();
+        let dest = dir.path().join("oma-dvd");
+        symlink(&victim, &dest).unwrap();
+
+        let src = dir.path().join("built");
+        fs::write(&src, b"helper-bytes").unwrap();
+        fs::set_permissions(&src, fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert!(install_regular_file(&src, &dest).is_ok());
+        assert!(dest.is_file() && !dest.is_symlink());
+        assert_eq!(fs::read(&dest).unwrap(), b"helper-bytes");
+        assert_eq!(fs::read_to_string(&victim).unwrap(), "secret");
+        assert_eq!(fs::metadata(&dest).unwrap().mode() & 0o777, 0o755);
+
+        let link_src = dir.path().join("as-link");
+        symlink(&src, &link_src).unwrap();
+        let other = dir.path().join("other");
+        assert!(install_regular_file(&link_src, &other).is_err());
+        assert!(!other.exists());
+    }
+
+    #[test]
+    fn i18n_read_refuses_symlink_fifo_and_oversize() {
+        assert!(i18n_name_ok("en.json"));
+        assert!(i18n_name_ok("de.json"));
+        assert!(i18n_name_ok("de_DE.json"));
+        assert!(!i18n_name_ok("../en.json"));
+        assert!(!i18n_name_ok("en.json.bak"));
+        assert!(!i18n_name_ok("en/json"));
+        assert!(!i18n_name_ok(".json"));
+
+        let dir = tempfile::tempdir().unwrap();
+        let i18n = dir.path().join("i18n");
+        fs::create_dir(&i18n).unwrap();
+        fs::write(i18n.join("en.json"), b"{\"hello\":\"world\"}\n").unwrap();
+        fs::set_permissions(i18n.join("en.json"), fs::Permissions::from_mode(0o644)).unwrap();
+        let pairs = load_i18n_file(dir.path(), "en.json").unwrap();
+        assert_eq!(pairs, vec![("hello".into(), "world".into())]);
+
+        let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let shipped = load_i18n_file(&repo, "en.json").unwrap();
+        assert!(shipped.iter().any(|(k, v)| k == "app.name" && v == "Video to DVD"));
+        let shipped_de = load_i18n_file(&repo, "de.json").unwrap();
+        assert!(shipped_de.iter().any(|(k, _)| k == "app.name"));
+
+        let victim = dir.path().join("victim");
+        fs::write(&victim, b"secret").unwrap();
+        let linked = i18n.join("de.json");
+        symlink(&victim, &linked).unwrap();
+        assert!(load_i18n_file(dir.path(), "de.json").is_err());
+        assert_eq!(fs::read_to_string(&victim).unwrap(), "secret");
+
+        let fifo = i18n.join("fr.json");
+        unsafe {
+            let c = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+            libc::mkfifo(c.as_ptr(), 0o600);
+        }
+        assert!(load_i18n_file(dir.path(), "fr.json").is_err());
+
+        let huge = i18n.join("it.json");
+        fs::write(&huge, vec![b'x'; MAX_I18N_BYTES + 1]).unwrap();
+        assert!(load_i18n_file(dir.path(), "it.json").is_err());
     }
 }

@@ -911,7 +911,106 @@ Panel {
       root.makeAnother()
   }
 
-  component ActionBtn: Rectangle {
+  component SegmentedChoice: BorderSurface {
+    id: seg
+    property var options: []
+    property string value: ""
+    property real fontPx: Style.font.caption
+    signal changed(string value)
+
+    implicitHeight: Style.spacing.controlHeight
+    height: visible ? implicitHeight : 0
+    radius: Math.min(Style.cornerRadius, Style.space(4))
+    clip: true
+    color: Style.normalFillFor(root.contentForeground, Color.accent)
+    borderSpec: Border.controlSpec(segHover >= 0 ? "hover-cursor" : "normal", root.contentForeground, Color.accent)
+
+    property int segHover: -1
+
+    function optionValue(o) {
+      return (o && typeof o === "object") ? String(o.value) : String(o)
+    }
+    function optionLabel(o) {
+      return (o && typeof o === "object") ? String(o.label) : String(o)
+    }
+    function optionAction(o) {
+      if (o && typeof o === "object" && o.actionId)
+        return String(o.actionId)
+      return optionValue(o).toLowerCase()
+    }
+
+    Row {
+      id: segRow
+      anchors.fill: parent
+      anchors.topMargin: parent.borderTop
+      anchors.bottomMargin: parent.borderBottom
+      anchors.leftMargin: parent.borderLeft
+      anchors.rightMargin: parent.borderRight
+      spacing: 0
+
+      Repeater {
+        model: seg.options
+
+        Item {
+          required property var modelData
+          required property int index
+          width: Math.floor(segRow.width / Math.max(seg.options.length, 1))
+          height: segRow.height
+          readonly property string segValue: seg.optionValue(modelData)
+          readonly property string segAction: seg.optionAction(modelData)
+          readonly property bool chosen: segValue === seg.value
+          readonly property bool hot: mouse.containsMouse || (root.keyNav && root.actionHot(segAction))
+
+          Rectangle {
+            anchors.fill: parent
+            color: chosen
+              ? Style.selectedFillFor(root.contentForeground, Color.accent)
+              : (hot ? Style.hoverFillFor(root.contentForeground, Color.accent) : "transparent")
+          }
+
+          Text {
+            anchors.centerIn: parent
+            width: parent.width - Style.space(8)
+            text: seg.optionLabel(modelData)
+            textFormat: Text.PlainText
+            elide: Text.ElideRight
+            wrapMode: Text.NoWrap
+            horizontalAlignment: Text.AlignHCenter
+            color: root.contentForeground
+            font.family: root.contentFontFamily
+            font.pixelSize: seg.fontPx
+            font.bold: chosen
+          }
+
+          Rectangle {
+            visible: index < seg.options.length - 1
+            width: 1
+            height: parent.height - Style.space(8)
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            color: Qt.rgba(root.contentForeground.r, root.contentForeground.g, root.contentForeground.b, 0.28)
+          }
+
+          MouseArea {
+            id: mouse
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onContainsMouseChanged: {
+              seg.segHover = containsMouse ? index : (seg.segHover === index ? -1 : seg.segHover)
+              if (containsMouse) {
+                root.keyNav = false
+                root.setCursorTo(segAction)
+              }
+            }
+            onClicked: seg.changed(segValue)
+          }
+        }
+      }
+    }
+  }
+
+  component ActionBtn: Button {
     property string label: ""
     property string actionId: ""
     property bool on: true
@@ -919,46 +1018,23 @@ Panel {
     property real fontPx: Style.font.body
     signal activated()
 
-    height: visible ? Style.space(32) : 0
-    radius: Style.cornerRadius
+    implicitHeight: Style.spacing.controlHeight
+    text: label
+    selected: chosen
+    enabled: on
+    bordered: true
+    hasCursor: root.keyNav && root.actionHot(actionId)
+    foreground: root.contentForeground
+    fontFamily: root.contentFontFamily
+    fontSize: fontPx
+    radius: Math.min(Style.cornerRadius, Style.space(4))
     opacity: on ? 1.0 : 0.4
-    readonly property bool hot: mouse.containsMouse || (root.keyNav && root.actionHot(actionId))
-    color: hot
-      ? Style.hoverFillFor(root.contentForeground, Color.accent)
-      : (chosen
-        ? Style.selectedFillFor(root.contentForeground, Color.accent)
-        : Style.normalFillFor(root.contentForeground, Color.accent))
-    border.width: Style.controlBorderWidth(false, hot)
-    border.color: hot
-      ? Style.hoverBorderFor(root.contentForeground, Color.accent)
-      : Style.normalBorderFor(root.contentForeground, Color.accent)
-
-    Text {
-      anchors.centerIn: parent
-      width: parent.width - Style.space(8)
-      text: label
-      textFormat: Text.PlainText
-      elide: Text.ElideRight
-      wrapMode: Text.NoWrap
-      horizontalAlignment: Text.AlignHCenter
-      color: root.contentForeground
-      font.family: root.contentFontFamily
-      font.pixelSize: fontPx
-    }
-
-    MouseArea {
-      id: mouse
-      anchors.fill: parent
-      hoverEnabled: true
-      enabled: on
-      cursorShape: Qt.PointingHandCursor
-      onContainsMouseChanged: {
-        if (containsMouse) {
-          root.keyNav = false
-          root.setCursorTo(actionId)
-        }
+    onClicked: activated()
+    onHovered: function(isHovered) {
+      if (isHovered) {
+        root.keyNav = false
+        root.setCursorTo(actionId)
       }
-      onClicked: parent.activated()
     }
   }
 
@@ -1096,26 +1172,16 @@ Panel {
           }
         }
 
-        Row {
+        SegmentedChoice {
           id: tvStandardRow
           width: parent.width
-          spacing: Style.space(8)
           visible: !root.busy && root.showWorkUi
-
-          Repeater {
-            model: [
-              { labelKey: "tv.pal", std: "PAL" },
-              { labelKey: "tv.ntsc", std: "NTSC" }
-            ]
-            ActionBtn {
-              width: (tvStandardRow.width - tvStandardRow.spacing) / 2
-              label: root.t(modelData.labelKey)
-              actionId: modelData.std === "PAL" ? "pal" : "ntsc"
-              chosen: root.tvStandard === modelData.std
-              fontPx: Style.font.caption
-              onActivated: root.tvStandard = modelData.std
-            }
-          }
+          options: [
+            { value: "PAL", label: root.t("tv.pal"), actionId: "pal" },
+            { value: "NTSC", label: root.t("tv.ntsc"), actionId: "ntsc" }
+          ]
+          value: root.tvStandard
+          onChanged: function(v) { root.tvStandard = v }
         }
 
         Row {

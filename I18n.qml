@@ -4,6 +4,7 @@ import Quickshell.Io
 
 // Tiny locale helper: flat JSON maps in i18n/<tag>.json (BCP-47 / ISO 639).
 // Resolve Qt.locale().name, then LANGUAGE / LANG, trying de_DE.json → de.json → en.json.
+// Files are read by oma-dvd (no-follow, size-capped); FileView is not used.
 Item {
   id: root
   visible: false
@@ -15,13 +16,7 @@ Item {
   property string localeTag: "en"
   property int revision: 0
   property bool ready: false
-
-  FileView {
-    id: jsonView
-    blockLoading: true
-    preload: false
-    printErrors: false
-  }
+  property string helperPath: Qt.resolvedUrl("oma-dvd").toString().replace("file://", "")
 
   function t(key) {
     var _dep = root.revision
@@ -87,47 +82,50 @@ Item {
     return list
   }
 
-  function jsonPath(name) {
-    if (!/^[A-Za-z]{2,8}(_[A-Za-z0-9]{1,16})?\.json$/.test(String(name)))
+  function jsonName(tag) {
+    var name = String(tag) + ".json"
+    if (!/^[A-Za-z]{2,8}(_[A-Za-z0-9]{1,16})?\.json$/.test(name))
       return ""
-    var u = Qt.resolvedUrl("i18n/" + name)
-    return u.toString().replace("file://", "")
+    return name
   }
 
-  function loadJson(name) {
-    var p = root.jsonPath(name)
-    if (!p)
-      return null
-    jsonView.path = p
+  function applyPayload(json) {
     try {
-      var txt = jsonView.text()
-      if (!txt)
-        return null
-      return JSON.parse(txt)
-    } catch (e) {
-      return null
+      var data = JSON.parse(json)
+      if (!data || typeof data !== "object")
+        return
+      if (typeof data.tag !== "string" || typeof data.fallback !== "object" || typeof data.strings !== "object")
+        return
+      root.fallback = data.fallback
+      root.strings = data.strings
+      root.localeTag = data.tag
+      root.ready = true
+      root.revision++
+    } catch (e) {}
+  }
+
+  Process {
+    id: i18nProc
+    stdout: SplitParser {
+      onRead: function(line) {
+        if (line.indexOf("I18N:") !== 0)
+          return
+        root.applyPayload(line.substring(5))
+      }
     }
   }
 
   function load() {
-    var en = root.loadJson("en.json") || {}
-    root.fallback = en
+    var args = [root.helperPath, "read-i18n", "en.json"]
     var cands = root.candidates()
-    var chosen = en
-    var tag = "en"
     for (var i = 0; i < cands.length; i++) {
-      var c = cands[i]
-      var data = root.loadJson(c + ".json")
-      if (data) {
-        chosen = data
-        tag = c
-        break
-      }
+      var name = root.jsonName(cands[i])
+      if (!name || name === "en.json")
+        continue
+      args.push(name)
     }
-    root.strings = chosen
-    root.localeTag = tag
-    root.ready = true
-    root.revision++
+    i18nProc.command = args
+    i18nProc.running = true
   }
 
   Component.onCompleted: root.load()

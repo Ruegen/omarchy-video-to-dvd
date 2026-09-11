@@ -53,6 +53,8 @@ pub fn run(args: &[String]) -> i32 {
         "space-check" => convert::space_check(rest.first().map(String::as_str).unwrap_or("")),
         "install-packages" => setup::install_packages(),
         "add-optical" => setup::add_optical(),
+        "install-helper" => setup::install_helper(),
+        "read-i18n" => security::read_i18n_cmd(rest),
         _ => {
             eprintln!("Unknown mode: {mode}");
             1

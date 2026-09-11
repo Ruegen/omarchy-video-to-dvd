@@ -6,7 +6,7 @@ Omarchy bar widget: pick a video → PAL or NTSC DVD-Video ISO → wait for a bl
 
 Uses AMD AMF hardware encoding (`mpeg2_amf`) when available. The bar icon is a monochrome disc glyph, so it follows the current theme.
 
-![Preview](preview.png)
+![Preview](preview-44c773406bc1.png)
 
 ## Install
 
@@ -21,7 +21,7 @@ The panel talks to a Rust helper (`oma-dvd`) that still runs ffmpeg, dvdauthor, 
 Build the helper after a git checkout:
 
 ```sh
-cargo build --release && cp -f target/release/oma-dvd .
+cargo build --release --locked && ./target/release/oma-dvd install-helper
 ```
 
 ## Usage
