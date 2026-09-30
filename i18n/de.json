@@ -2,6 +2,7 @@
   "app.name": "Video auf DVD",
   "app.header": "VIDEO AUF DVD",
   "bar.tooltip": "Video auf DVD öffnen",
+  "bar.tooltipBusy": "Video auf DVD — Auftrag läuft",
   "picker.title": "Video auswählen",
   "file.none": "Keine Datei ausgewählt",
   "file.label": "Datei: %1",
@@ -89,6 +90,8 @@
   "error.invalid-device": "kein geprüftes optisches Laufwerk",
   "error.timeout": "Zeitüberschreitung",
   "error.runtime-state": "private Laufzeitdateien konnten nicht erstellt werden",
+  "error.job-busy": "ein DVD-Auftrag läuft bereits",
+  "error.picker-failed": "Dateiauswahl konnte nicht geöffnet werden",
   "drive.usb": "USB-DVD-Laufwerk",
   "drive.internal": "Internes DVD-Laufwerk"
 }

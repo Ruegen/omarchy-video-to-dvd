@@ -45,6 +45,10 @@ Panel {
   property bool jobHasError: false
   property int jobPgid: 0
   property string phase: "idle"
+  property bool followingRemote: false
+  property bool jobReading: false
+  property bool remoteDone: false
+  property var jobBuf: ({})
 
   property bool setupProbed: false
   property bool setupBusy: false
@@ -135,6 +139,8 @@ Panel {
     root.busy = false
     root.phase = "idle"
     root.jobPgid = 0
+    root.followingRemote = false
+    root.remoteDone = false
     root.burnConfirmOpen = false
     if (status !== undefined)
       root.statusText = status
@@ -149,6 +155,8 @@ Panel {
     root.progressPct = 100
     root.jobPgid = 0
     root.jobHasError = false
+    root.followingRemote = false
+    root.remoteDone = true
     root.phase = "done"
     root.statusText = root.t("done.title")
   }
@@ -164,8 +172,11 @@ Panel {
     root.jobHasError = false
     root.jobPgid = 0
     root.busy = false
+    root.followingRemote = false
+    root.remoteDone = false
     root.phase = "idle"
     root.statusText = root.t("status.idle")
+    root.jobCtl(["job-clear"])
   }
 
   function translateDriveLabel(label) {
@@ -326,7 +337,8 @@ Panel {
   }
 
   function applySetupStatus() {
-    if (root.busy || root.phase === "done") return
+    if (root.busy || root.followingRemote || root.phase === "done" || root.phase === "wait" || root.phase === "convert" || root.phase === "burn")
+      return
 
     if (root.setupBusy && root.setupKind === "packages" && root.packagesReady)
       root.clearSetupBusy()
@@ -440,6 +452,154 @@ Panel {
 
   Process { id: notifyProc }
   Process { id: killerProc }
+  Process { id: jobCtlProc }
+
+  function jobCtl(args) {
+    var cmd = [root.helperPath]
+    for (var i = 0; i < args.length; i++)
+      cmd.push(String(args[i]))
+    jobCtlProc.exec(cmd)
+  }
+
+  function localJobRunning() {
+    return convertProc.running || burnProc.running
+  }
+
+  function statusFromJob(payload) {
+    if (payload === "insert-blank")
+      return root.t("status.insertBlank")
+    if (payload === "burning")
+      return root.t("status.burning")
+    if (payload === "cancelled")
+      return root.t("status.cancelled")
+    if (payload === "done")
+      return root.t("status.done")
+    if (payload === "job-busy")
+      return root.t("status.error", root.errorText("job-busy"))
+    return root.translateProgress(payload)
+  }
+
+  function applyRemoteJob(job) {
+    var phase = String(job.phase || "")
+    var source = String(job.source || "")
+    if (phase === "cancelled") {
+      if (root.busy && !root.userCancelled) {
+        root.userCancelled = true
+        root.notify(root.t("notify.cancelled.title"), root.t("notify.cancelled.body"))
+      }
+      waitTimer.stop()
+      root.resetIdle(root.t("status.cancelled"))
+      return
+    }
+    if (phase === "done") {
+      if (!root.remoteDone)
+        root.enterDone()
+      root.remoteDone = true
+      return
+    }
+    if (phase === "error") {
+      if (root.localJobRunning())
+        return
+      root.handleJobError(String(job.error || "runtime-state"), root.t("notify.convertFailed.title"))
+      return
+    }
+    if (source !== "cli") {
+      var n = parseInt(job.pgid || job.pid)
+      if (!isNaN(n) && n > 0)
+        root.jobPgid = n
+      return
+    }
+    if (root.localJobRunning())
+      return
+    root.followingRemote = true
+    root.busy = true
+    root.userCancelled = false
+    var pg = parseInt(job.pgid || job.pid)
+    if (!isNaN(pg) && pg > 0)
+      root.jobPgid = pg
+    if (job.name)
+      root.inputName = root.plainText(job.name).substring(0, 200)
+    if (job.input)
+      root.inputPath = root.plainText(job.input).substring(0, 240)
+    if (job.iso)
+      root.outputIso = root.plainText(job.iso).substring(0, 240)
+    if (root.isOpticalDevice(job.device))
+      root.selectedDevice = String(job.device)
+    var pct = parseInt(job.progress)
+    if (!isNaN(pct))
+      root.progressPct = pct
+    if (phase === "convert" || phase === "converted")
+      root.phase = "convert"
+    else if (phase === "wait")
+      root.phase = "wait"
+    else if (phase === "burn")
+      root.phase = "burn"
+    root.statusText = root.statusFromJob(String(job.status || ""))
+    if (root.phase === "wait") {
+      waitTimer.stop()
+      if (!root.waitNotified) {
+        root.waitNotified = true
+        root.notify(root.t("notify.waiting.title"), root.t("notify.waiting.body"))
+      }
+    }
+  }
+
+  function onJobIdle() {
+    if (root.followingRemote && !root.localJobRunning() && root.busy && root.phase !== "done")
+      root.resetIdle(root.statusText)
+  }
+
+  Process {
+    id: jobStatusProc
+    command: [root.helperPath, "job-status"]
+    stdout: SplitParser {
+      onRead: function(line) {
+        var tline = String(line || "").trim()
+        if (tline.length > 500)
+          tline = tline.substring(0, 500)
+        if (tline === "JOB:IDLE") {
+          root.jobReading = false
+          root.onJobIdle()
+          return
+        }
+        if (tline === "JOB:BEGIN") {
+          root.jobBuf = ({})
+          root.jobReading = true
+          return
+        }
+        if (tline === "JOB:END") {
+          root.jobReading = false
+          root.applyRemoteJob(root.jobBuf)
+          return
+        }
+        if (!root.jobReading)
+          return
+        var eq = tline.indexOf("=")
+        if (eq < 1)
+          return
+        var next = ({})
+        var old = root.jobBuf
+        if (old) {
+          var keys = Object.keys(old)
+          for (var k = 0; k < keys.length; k++)
+            next[keys[k]] = old[keys[k]]
+        }
+        next[tline.substring(0, eq)] = tline.substring(eq + 1)
+        root.jobBuf = next
+      }
+    }
+  }
+
+  Timer {
+    id: jobPollTimer
+    interval: 800
+    repeat: true
+    running: true
+    onTriggered: {
+      if (!jobStatusProc.running)
+        jobStatusProc.running = true
+    }
+  }
 
 
   Process {
@@ -493,7 +653,7 @@ Panel {
 
   Process {
     id: convertProc
-    environment: ["VIDEO_TO_DVD_STANDARD=" + root.tvStandard]
+    environment: ["VIDEO_TO_DVD_STANDARD=" + root.tvStandard, "VIDEO_TO_DVD_SOURCE=panel"]
     command: [root.helperPath, "convert", root.inputPath, root.outputIso]
     stdout: SplitParser {
       onRead: function(line) {
@@ -543,6 +703,8 @@ Panel {
   }
 
   function tryBurnNow() {
+    if (root.followingRemote)
+      return
     if (root.phase !== "wait" || root.userCancelled)
       return
     root.statusText = root.t("status.checkingDrive")
@@ -550,6 +712,8 @@ Panel {
   }
 
   function startBurn() {
+    if (root.followingRemote)
+      return
     if (root.phase === "burn" || root.userCancelled)
       return
     waitTimer.stop()
@@ -571,10 +735,11 @@ Panel {
     interval: 3000
     repeat: true
     onTriggered: {
-      if (root.phase !== "wait" || root.userCancelled) {
+      if (root.phase !== "wait" || root.userCancelled || root.followingRemote) {
         waitTimer.stop()
         return
       }
+      root.jobCtl(["job-update", "heartbeat"])
       root.pollBlank()
     }
   }
@@ -607,7 +772,7 @@ Panel {
         else
           root.discState = "none"
 
-        if (root.phase !== "wait" || root.userCancelled)
+        if (root.phase !== "wait" || root.userCancelled || root.followingRemote)
           return
         if (tline === "BLANK:YES") {
           root.startBurn()
@@ -636,6 +801,7 @@ Panel {
 
   Process {
     id: burnProc
+    environment: ["VIDEO_TO_DVD_SOURCE=panel"]
     command: root.selectedDevice.length > 0
       ? [root.helperPath, "burn", root.outputIso, root.selectedDevice]
       : [root.helperPath, "burn", root.outputIso]
@@ -673,11 +839,13 @@ Panel {
         root.notify(root.t("notify.cancelled.title"), root.t("notify.cancelled.body"))
       }
       waitTimer.stop()
+      root.jobCtl(["job-clear"])
       root.resetIdle(root.t("status.cancelled"))
       return
     }
     waitTimer.stop()
     root.jobHasError = true
+    root.jobCtl(["job-clear"])
     root.resetIdle(root.t("status.error", root.errorText(err)))
     root.notify(failTitle, root.statusText)
   }
@@ -705,18 +873,21 @@ Panel {
     root.waitNotified = false
     root.progressPct = 0
     root.statusText = root.t("status.insertBlank")
+    root.jobCtl(["job-update", "wait", root.outputIso, root.inputName, root.selectedDevice, root.inputPath])
     waitTimer.start()
     root.pollBlank()
   }
 
   function startOneShot() {
-    if (root.busy) return
+    if (root.busy || root.followingRemote) return
     if (!root.packagesReady) { root.statusText = root.t("status.installPackagesFirst"); return }
     if (!root.inputPath) { root.statusText = root.t("status.selectFileFirst"); return }
     root.userCancelled = false
     root.waitNotified = false
     root.jobHasError = false
     root.jobPgid = 0
+    root.followingRemote = false
+    root.remoteDone = false
     root.busy = true
     root.converted = false
     root.progressPct = 0
@@ -735,6 +906,7 @@ Panel {
     root.burnConfirmOpen = false
     root.userCancelled = true
     waitTimer.stop()
+    root.jobCtl(["cancel"])
 
     var pgid = root.jobPgid
     var pid = 0
@@ -1107,9 +1279,9 @@ Panel {
         z: 20
         opened: root.burnConfirmOpen
         selectedIndex: 0
-        message: root.t("confirm.burnCancel.message")
-        cancelText: root.t("confirm.burnCancel.keep")
-        confirmText: root.t("confirm.burnCancel.stop")
+        message: root.plainText(root.t("confirm.burnCancel.message"))
+        cancelText: root.plainText(root.t("confirm.burnCancel.keep"))
+        confirmText: root.plainText(root.t("confirm.burnCancel.stop"))
         background: Color.popups.background
         foreground: root.contentForeground
         scrim: Util.alpha(Color.popups.background, 0.72)

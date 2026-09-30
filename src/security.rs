@@ -88,6 +88,7 @@ pub struct Runtime {
     pub dir: PathBuf,
     pub log: PathBuf,
     pub pgid: PathBuf,
+    pub state: PathBuf,
 }
 
 impl Runtime {
@@ -111,9 +112,16 @@ impl Runtime {
         };
         let log = env_or_inside("VIDEO_TO_DVD_LOG", &dir, "convert.log");
         let pgid = env_or_inside("VIDEO_TO_DVD_PGID_FILE", &dir, "job.pgid");
+        let state = env_or_inside("VIDEO_TO_DVD_JOB_FILE", &dir, "job.state");
         safe_create_file(&log)?;
         safe_create_file(&pgid)?;
-        Ok(Self { dir, log, pgid })
+        safe_create_file(&state)?;
+        Ok(Self {
+            dir,
+            log,
+            pgid,
+            state,
+        })
     }
 
     pub fn setup_job(&self) -> io::Result<()> {
@@ -166,13 +174,13 @@ impl Runtime {
     }
 }
 
-enum OpenMode {
+pub(crate) enum OpenMode {
     Read,
     Append,
     WriteTrunc,
 }
 
-fn open_nofollow(path: &Path, mode: OpenMode) -> io::Result<fs::File> {
+pub(crate) fn open_nofollow(path: &Path, mode: OpenMode) -> io::Result<fs::File> {
     if path.is_symlink() {
         return Err(io::Error::other("symlink"));
     }
@@ -192,7 +200,7 @@ fn open_nofollow(path: &Path, mode: OpenMode) -> io::Result<fs::File> {
     opts.open(path)
 }
 
-fn write_nofollow(path: &Path, bytes: &[u8]) -> io::Result<()> {
+pub(crate) fn write_nofollow(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let mut f = open_nofollow(path, OpenMode::WriteTrunc)?;
     f.write_all(bytes)
 }
@@ -935,7 +943,10 @@ pub fn maybe_newgrp_wrap(dev: &str, args: &[String]) -> Option<i32> {
     }
     std::env::set_var("VIDEO_TO_DVD_NEWGRP", "1");
     let exe = std::env::current_exe().ok()?;
-    let mut quoted = format!("{} ", shell_quote(&exe.display().to_string()));
+    let mut quoted = format!(
+        "VIDEO_TO_DVD_NEWGRP=1 {} ",
+        shell_quote(&exe.display().to_string())
+    );
     for a in args {
         quoted.push_str(&shell_quote(a));
         quoted.push(' ');

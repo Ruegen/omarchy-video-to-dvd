@@ -2,13 +2,13 @@
 
 [![Built for Omarchy: Plugin](https://raw.githubusercontent.com/tcballard/omarchy-badges/75975e5b5bf75e7ede3764bcd2950046f7abfe2c/badges/v1/omarchy-plugin.svg)](https://github.com/tcballard/omarchy-badges)
 
-Version 1.1.0
+Version 1.2.0
 
 Omarchy bar widget: pick a video → PAL or NTSC DVD-Video ISO → wait for a blank disc → burn → eject.
 
 Uses AMD AMF hardware encoding (`mpeg2_amf`) when available. The bar icon is a monochrome disc glyph, so it follows the current theme.
 
-![Preview](preview-2a2bf7f365cf.png)
+![Preview](preview.png)
 
 ## Install
 
@@ -28,12 +28,22 @@ cargo build --release --locked && ./target/release/oma-dvd install-helper
 
 ## Usage
 
-1. Click the disc icon on the bar.
-2. Select video and standard (PAL / NTSC).
-3. Make DVD.
-4. Insert a blank disc when asked. Cancel anytime.
+**From the bar:** click the disc icon, pick a video, Make DVD, insert a blank disc when asked.
 
-After a successful burn the ISO is deleted and the tray ejects. A long filename is elided in the panel.
+**From a terminal or AI agent** — same job as the panel. Progress shows in the bar, and Cancel in the panel stops the command:
+
+```sh
+oma-dvd make
+oma-dvd pick
+oma-dvd make ~/Videos/film.mp4
+oma-dvd make ~/Videos/film.mp4 --standard NTSC
+oma-dvd status
+oma-dvd cancel
+```
+
+`oma-dvd make` with no file opens the same video chooser as the bar. `oma-dvd pick` only chooses and prints the path. With a path, `make` converts, opens the tray, waits for a blank disc, burns, then ejects. If `~/.local/bin` exists, first-run setup puts `oma-dvd` there so agents can find it. Otherwise use the helper next to the plugin.
+
+From the bar: select the video and standard (PAL / NTSC), then Make DVD. Cancel anytime. After a successful burn the ISO is deleted and the tray ejects.
 
 ## Remove
 

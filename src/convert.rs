@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use crate::classify::{
     eta_status, iso_need_bytes, parse_ffmpeg_speed, parse_ffmpeg_time_seconds, DVD_BYTES,
 };
+use crate::job::Phase;
 use crate::protocol::{emit, fail, progress};
 use crate::security::{
     become_session_leader, capture_limited, cmd, have_cmd, install_iso_output, iso_is_safe_output,
@@ -43,6 +44,10 @@ fn supported(ext: &str) -> bool {
         ext,
         "mp4" | "mkv" | "mov" | "avi" | "webm" | "m4v" | "ts" | "mts" | "m2ts" | "wmv" | "flv"
     )
+}
+
+pub(crate) fn is_supported_input(path: &str) -> bool {
+    supported(&file_ext(path))
 }
 
 fn space_ok(target: &Path) -> bool {
@@ -130,6 +135,17 @@ pub fn space_check(target: &str) -> i32 {
     }
 }
 
+fn abort(rt: &Runtime, err: &str) -> i32 {
+    rt.job_fail(err);
+    rt.clear_pgid();
+    fail(err)
+}
+
+fn note(rt: &Runtime, pct: i32, payload: &str) {
+    progress(pct, payload);
+    rt.job_progress(pct, payload);
+}
+
 pub fn convert(input: &str, output_iso: &str) -> i32 {
     become_session_leader();
     let tv = tv_standard();
@@ -140,33 +156,30 @@ pub fn convert(input: &str, output_iso: &str) -> i32 {
     if rt.setup_job().is_err() {
         return fail("runtime-state");
     }
+    if let Err(err) = rt.claim_job(Phase::Convert, input, output_iso, "") {
+        rt.clear_pgid();
+        return fail(err);
+    }
 
     let ext = file_ext(input);
     if !supported(&ext) {
-        progress(0, &format!("unsupported-format|.{ext}"));
-        rt.clear_pgid();
-        return fail("unsupported-format");
+        note(&rt, 0, &format!("unsupported-format|.{ext}"));
+        return abort(&rt, "unsupported-format");
     }
     if !Path::new(input).is_file() {
-        rt.clear_pgid();
-        return fail("input-not-found");
+        return abort(&rt, "input-not-found");
     }
     let out = Path::new(output_iso);
     if !iso_is_safe_output(out) {
-        rt.clear_pgid();
-        return fail("iso-unsafe-path");
+        return abort(&rt, "iso-unsafe-path");
     }
     if !space_ok(out) {
-        rt.clear_pgid();
-        return fail("not-enough-space");
+        return abort(&rt, "not-enough-space");
     }
 
     let work = match tempfile::tempdir() {
         Ok(w) => w,
-        Err(_) => {
-            rt.clear_pgid();
-            return fail("runtime-state");
-        }
+        Err(_) => return abort(&rt, "runtime-state"),
     };
     rt.append_log(&format!(
         "=== oma-dvd convert ===\ninput={input}\noutput={output_iso}\nwork={}\npgid={}",
@@ -256,7 +269,7 @@ pub fn convert(input: &str, output_iso: &str) -> i32 {
 
     let dim = if src_w.is_empty() { "?" } else { &src_w };
     let him = if src_h.is_empty() { "?" } else { &src_h };
-    progress(1, &format!("analyzing|{dim}x{him}|{aspect}|{tv}"));
+    note(&rt, 1, &format!("analyzing|{dim}x{him}|{aspect}|{tv}"));
 
     let mpg = work.path().join("video.mpg");
     let mut ff = Command::new("ffmpeg");
@@ -332,11 +345,11 @@ pub fn convert(input: &str, output_iso: &str) -> i32 {
                                 let token = eta_status(dur_i, elapsed, wall, speed, pct_v);
                                 let key = format!("{pct}:{token}");
                                 if key != last_key {
-                                    progress(pct as i32, &token);
+                                    note(&rt, pct as i32, &token);
                                     last_key = key;
                                 }
                             } else {
-                                progress(1, "encoding");
+                                note(&rt, 1, "encoding");
                             }
                         }
                     }
@@ -360,19 +373,16 @@ pub fn convert(input: &str, output_iso: &str) -> i32 {
     };
 
     if encode_rc == 124 || encode_rc == 137 {
-        rt.clear_pgid();
-        return fail("timeout");
+        return abort(&rt, "timeout");
     }
     if encode_rc == 143 {
-        rt.clear_pgid();
-        return fail("cancelled");
+        return abort(&rt, "cancelled");
     }
     if encode_rc != 0 || fs::metadata(&mpg).map(|m| m.len() == 0).unwrap_or(true) {
-        rt.clear_pgid();
-        return fail("ffmpeg-encode-failed");
+        return abort(&rt, "ffmpeg-encode-failed");
     }
 
-    progress(75, "authoring");
+    note(&rt, 75, "authoring");
     std::env::set_var("VIDEO_FORMAT", tv);
     let dvd_dir = work.path().join("dvd");
     let da1 = run_deadline_logged(
@@ -386,8 +396,7 @@ pub fn convert(input: &str, output_iso: &str) -> i32 {
     )
     .unwrap_or(1);
     if da1 == 124 || da1 == 137 {
-        rt.clear_pgid();
-        return fail("timeout");
+        return abort(&rt, "timeout");
     }
     let da2 = if da1 == 0 {
         run_deadline_logged(
@@ -404,18 +413,15 @@ pub fn convert(input: &str, output_iso: &str) -> i32 {
         1
     };
     if da2 == 124 || da2 == 137 {
-        rt.clear_pgid();
-        return fail("timeout");
+        return abort(&rt, "timeout");
     }
     if da1 != 0 || da2 != 0 || !dvd_dir.join("VIDEO_TS/VIDEO_TS.IFO").is_file() {
-        rt.clear_pgid();
-        return fail("dvdauthor-failed");
+        return abort(&rt, "dvdauthor-failed");
     }
 
-    progress(90, "iso");
+    note(&rt, 90, "iso");
     if !iso_is_safe_output(out) {
-        rt.clear_pgid();
-        return fail("iso-unsafe-path");
+        return abort(&rt, "iso-unsafe-path");
     }
     let parent = out.parent().unwrap_or(Path::new("."));
     let tmp = match tempfile::Builder::new()
@@ -424,10 +430,7 @@ pub fn convert(input: &str, output_iso: &str) -> i32 {
         .tempfile_in(parent)
     {
         Ok(t) => t,
-        Err(_) => {
-            rt.clear_pgid();
-            return fail("iso-build-failed");
-        }
+        Err(_) => return abort(&rt, "iso-build-failed"),
     };
     let tmp_path = tmp.path().to_path_buf();
     let iso_bin = if have_cmd("genisoimage") {
@@ -453,22 +456,20 @@ pub fn convert(input: &str, output_iso: &str) -> i32 {
     )
     .unwrap_or(1);
     if iso_rc == 124 || iso_rc == 137 {
-        rt.clear_pgid();
-        return fail("timeout");
+        return abort(&rt, "timeout");
     }
     if iso_rc != 0 || fs::metadata(&tmp_path).map(|m| m.len() == 0).unwrap_or(true) {
-        rt.clear_pgid();
-        return fail("iso-build-failed");
+        return abort(&rt, "iso-build-failed");
     }
     let persist = tmp.into_temp_path();
     if install_iso_output(&tmp_path, out).is_err() {
         let _ = persist;
-        rt.clear_pgid();
-        return fail("iso-unsafe-path");
+        return abort(&rt, "iso-unsafe-path");
     }
     let _ = persist;
+    rt.job_converted();
     rt.clear_pgid();
-    progress(100, "done");
+    note(&rt, 100, "done");
     emit(&format!("RESULT:OK:{output_iso}"));
     0
 }

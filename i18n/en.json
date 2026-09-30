@@ -2,6 +2,7 @@
   "app.name": "Video to DVD",
   "app.header": "VIDEO TO DVD",
   "bar.tooltip": "Open Video to DVD",
+  "bar.tooltipBusy": "Video to DVD — job in progress",
   "picker.title": "Select video",
   "file.none": "No file selected",
   "file.label": "File: %1",
@@ -89,6 +90,8 @@
   "error.invalid-device": "not a validated optical drive",
   "error.timeout": "operation timed out",
   "error.runtime-state": "could not create private runtime files",
+  "error.job-busy": "a DVD job is already running",
+  "error.picker-failed": "could not open the file chooser",
   "drive.usb": "USB DVD drive",
   "drive.internal": "Internal DVD drive"
 }

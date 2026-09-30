@@ -15,6 +15,9 @@ BarWidget {
   readonly property bool opened: panelLoader.item
     ? panelLoader.item.opened === true
     : false
+  readonly property bool jobBusy: panelLoader.item
+    ? panelLoader.item.busy === true
+    : false
 
   function open() {
     root.injectPanel()
@@ -59,7 +62,9 @@ BarWidget {
     bar: root.bar
     fontFamily: "Font Awesome 7 Free Solid"
     text: "\uf51f"
-    tooltipText: i18n.t("bar.tooltip")
+    tooltipText: String(root.jobBusy ? i18n.t("bar.tooltipBusy") : i18n.t("bar.tooltip"))
+      .replace(/[&<>]/g, "")
+      .substring(0, 80)
     onPressed: function(buttonCode) {
       if (buttonCode === Qt.LeftButton) root.toggle()
     }

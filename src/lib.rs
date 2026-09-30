@@ -1,6 +1,8 @@
 pub mod burn;
 pub mod classify;
+pub mod cli;
 pub mod convert;
+pub mod job;
 pub mod protocol;
 pub mod security;
 pub mod setup;
@@ -8,17 +10,27 @@ pub mod setup;
 use security::install_cancel_flag;
 
 pub fn run(args: &[String]) -> i32 {
-    if args.is_empty() {
-        eprintln!("Unknown mode");
-        return 1;
+    if args.is_empty()
+        || args[0] == "--help"
+        || args[0] == "-h"
+        || args[0] == "help"
+    {
+        return cli::help();
     }
     let mode = args[0].as_str();
     let rest = &args[1..];
     match mode {
-        "convert" | "burn" | "eject" => install_cancel_flag(),
+        "convert" | "burn" | "eject" | "make" => install_cancel_flag(),
         _ => {}
     }
     match mode {
+        "make" => cli::make(rest),
+        "pick" => cli::pick(),
+        "status" => job::status_cmd(),
+        "cancel" => job::cancel_cmd(),
+        "job-status" => job::status_cmd(),
+        "job-update" => job::update_cmd(rest),
+        "job-clear" => job::update_cmd(&["clear".into()]),
         "convert" => {
             if rest.len() < 2 {
                 return protocol::fail("input-not-found");

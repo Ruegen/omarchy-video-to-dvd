@@ -1,4 +1,5 @@
 use std::fs;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use crate::protocol::{emit, fail};
@@ -179,9 +180,26 @@ pub fn install_helper() -> i32 {
     };
     match install_regular_file(&src, &dest) {
         Ok(()) => {
+            install_user_path_copy(&src);
             emit("SETUP:OK:helper");
             0
         }
         Err(_) => fail("runtime-state"),
     }
+}
+
+fn install_user_path_copy(src: &Path) {
+    let Ok(home) = std::env::var("HOME") else {
+        return;
+    };
+    let home = PathBuf::from(home);
+    if home.is_symlink() {
+        return;
+    }
+    let bin = home.join(".local").join("bin");
+    if !bin.is_dir() || bin.is_symlink() {
+        return;
+    }
+    let dest = bin.join("oma-dvd");
+    let _ = install_regular_file(src, &dest);
 }
