@@ -2,6 +2,9 @@ import QtQuick
 import Quickshell
 import Quickshell.Io
 
+// Named DvdI18n on purpose. Omarchy 4.5 ships qs.Commons.I18n as a
+// pragma Singleton; a plugin file called I18n.qml then fails to load with
+// "Composite Singleton Type I18n is not creatable".
 // Tiny locale helper: flat JSON maps in i18n/<tag>.json (BCP-47 / ISO 639).
 // Resolve Qt.locale().name, then LANGUAGE / LANG, trying de_DE.json → de.json → en.json.
 // Files are read by oma-dvd (no-follow, size-capped); FileView is not used.

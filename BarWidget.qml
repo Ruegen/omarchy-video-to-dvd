@@ -10,7 +10,9 @@ BarWidget {
   id: root
   moduleName: "io.github.ruegen.video-to-dvd"
 
-  I18n { id: i18n }
+  // Not named I18n: Omarchy 4.5 made qs.Commons.I18n a singleton, and creating
+  // a type of that name fails the panel with "I18n is not creatable".
+  DvdI18n { id: i18n }
 
   readonly property bool opened: panelLoader.item
     ? panelLoader.item.opened === true

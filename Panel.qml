@@ -2,6 +2,7 @@ import QtQuick
 import Quickshell
 import Quickshell.Io
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui
 
 // Video to DVD panel: pick a video, convert to a DVD-Video ISO, wait for a
@@ -19,7 +20,9 @@ Panel {
   property bool applyingSettings: false
   readonly property var barIdentity: hostWidget || root
 
-  I18n { id: i18n }
+  // Not named I18n: Omarchy 4.5 made qs.Commons.I18n a singleton, and creating
+  // a type of that name fails the panel with "I18n is not creatable".
+  DvdI18n { id: i18n }
 
   function t(key) {
     switch (arguments.length) {
@@ -98,7 +101,7 @@ Panel {
   property color themeGreen: "#9ece6a"
   readonly property color discColor: root.themeGreen
 
-  readonly property color contentForeground: bar ? bar.foreground : Color.foreground
+  readonly property color contentForeground: bar ? bar.foreground : Commons.Color.foreground
   readonly property string contentFontFamily: bar ? bar.fontFamily : Style.font.family
 
   ListModel { id: driveModel }
@@ -1103,7 +1106,7 @@ Panel {
     height: visible ? implicitHeight : 0
     radius: Math.min(Style.cornerRadius, Style.space(4))
     clip: true
-    color: Style.normalFillFor(root.contentForeground, Color.accent)
+    color: Style.normalFillFor(root.contentForeground, Commons.Color.accent)
     readonly property bool groupHot: {
       var _k = root.keyNav
       var _c = root.cursorId
@@ -1117,7 +1120,7 @@ Panel {
       }
       return false
     }
-    borderSpec: Border.controlSpec(groupHot ? "hover-cursor" : "normal", root.contentForeground, Color.accent)
+    borderSpec: Border.controlSpec(groupHot ? "hover-cursor" : "normal", root.contentForeground, Commons.Color.accent)
 
     property int segHover: -1
 
@@ -1158,9 +1161,9 @@ Panel {
           Rectangle {
             anchors.fill: parent
             color: chosen
-              ? Util.alpha(Color.accent, Style.selectedFillAlpha)
+              ? Util.alpha(Commons.Color.accent, Style.selectedFillAlpha)
               : (mouse.containsMouse && !chosen
-                ? Style.hoverFillFor(root.contentForeground, Color.accent)
+                ? Style.hoverFillFor(root.contentForeground, Commons.Color.accent)
                 : "transparent")
           }
 
@@ -1172,7 +1175,7 @@ Panel {
             elide: Text.ElideRight
             wrapMode: Text.NoWrap
             horizontalAlignment: Text.AlignHCenter
-            color: chosen ? Color.accent : Qt.darker(root.contentForeground, 1.45)
+            color: chosen ? Commons.Color.accent : Qt.darker(root.contentForeground, 1.45)
             font.family: root.contentFontFamily
             font.pixelSize: Style.font.body
             font.bold: chosen
@@ -1282,11 +1285,11 @@ Panel {
         message: root.plainText(root.t("confirm.burnCancel.message"))
         cancelText: root.plainText(root.t("confirm.burnCancel.keep"))
         confirmText: root.plainText(root.t("confirm.burnCancel.stop"))
-        background: Color.popups.background
+        background: Commons.Color.popups.background
         foreground: root.contentForeground
-        scrim: Util.alpha(Color.popups.background, 0.72)
+        scrim: Util.alpha(Commons.Color.popups.background, 0.72)
         selectedBackground: Util.alpha(root.contentForeground, 0.08)
-        selectedText: Color.accent
+        selectedText: Commons.Color.accent
         fontFamily: root.contentFontFamily
         cornerRadius: Style.cornerRadius
         onCanceled: root.burnConfirmOpen = false
@@ -1504,7 +1507,7 @@ Panel {
             width: Math.round(parent.width * (root.progressPct / 100))
             height: parent.height
             radius: parent.radius
-            color: root.showDiscSpin ? root.discColor : Style.selectedStateColor(root.contentForeground, Color.accent)
+            color: root.showDiscSpin ? root.discColor : Style.selectedStateColor(root.contentForeground, Commons.Color.accent)
             Behavior on width { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
           }
         }

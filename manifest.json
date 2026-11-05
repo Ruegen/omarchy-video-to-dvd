@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.ruegen.video-to-dvd",
   "name": "Video to DVD",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "author": "Ruegen",
   "license": "MIT",
   "description": "Convert a video to a PAL or NTSC DVD-Video ISO and burn it. CLI (oma-dvd make) shares the job with the bar panel so an agent can burn and Cancel in the panel stops it. Rust helper plus first-run Arch packages and optical-group permission. UI translations in i18n/.",
